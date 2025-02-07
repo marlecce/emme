@@ -5,7 +5,7 @@
 
 int main() {
     ServerConfig config;
-    char *config_path = "/mnt/c/Users/mlecce/myprojects/emme/config.yaml"; 
+    char *config_path = "config.yaml"; 
     if (load_config(&config, config_path) != 0) {
         fprintf(stderr, "Errore nel caricamento della configurazione\n");
         return 1;
