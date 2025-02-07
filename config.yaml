@@ -1,0 +1,4 @@
+server:
+  port: 8080
+  max_connections: 100
+  log_level: "info"

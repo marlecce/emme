@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "yaml.h": "c",
+        "config.h": "c",
+        "emit.h": "c",
+        "emitterstyle.h": "c",
+        "parser.h": "c",
+        "exceptions.h": "c",
+        "impl.h": "c",
+        "stdio.h": "c",
+        "server.h": "c"
+    }
+}
