@@ -36,6 +36,8 @@
 *.x86_64
 *.hex
 emme
+test_config
+test_server
 
 # Debug files
 *.dSYM/
