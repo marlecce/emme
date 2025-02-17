@@ -8,6 +8,7 @@
         "exceptions.h": "c",
         "impl.h": "c",
         "stdio.h": "c",
-        "server.h": "c"
+        "server.h": "c",
+        "http_parser.h": "c"
     }
 }

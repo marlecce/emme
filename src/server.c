@@ -8,8 +8,9 @@
 #include <fcntl.h>
 #include <liburing.h>
 #include <sys/sendfile.h>
-#include "server.h"
 #include "config.h"
+#include "server.h"
+#include "http_parser.h"
 
 #define MAX_EVENTS 100
 #define BUFFER_SIZE 1024
@@ -26,21 +27,51 @@ pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 WorkerTask task_queue[MAX_EVENTS];
 int queue_head = 0, queue_tail = 0;
 
-// Funzione che gestisce una singola connessione client
-void handle_client(int client_fd)
-{
+void handle_client(int client_fd) {
     char buffer[BUFFER_SIZE];
-    // Legge la richiesta (qui non viene fatto un parsing avanzato)
-    read(client_fd, buffer, BUFFER_SIZE);
+    // Legge la richiesta dalla socket
+    int n = read(client_fd, buffer, BUFFER_SIZE - 1);
+    if (n <= 0) {
+        close(client_fd);
+        return;
+    }
+    buffer[n] = '\0';
 
-    const char *response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: 13\r\n"
-        "\r\n"
-        "Hello, world!";
+    HttpRequest req;
+    // Effettua il parsing della richiesta
+    if (parse_http_request(buffer, n, &req) != 0) {
+        // Se il parsing fallisce, invia una risposta 400 Bad Request
+        const char *bad_response =
+            "HTTP/1.1 400 Bad Request\r\n"
+            "Content-Length: 0\r\n"
+            "\r\n";
+        send(client_fd, bad_response, strlen(bad_response), 0);
+        close(client_fd);
+        return;
+    }
 
-    send(client_fd, response, strlen(response), 0);
+    // Per debug o logging, stampa metodo e path
+    printf("Richiesta: %s %s %s\n", req.method, req.path, req.version);
+    // Qui potresti aggiungere logica di routing in base a req.path
+
+    // Esempio semplice: se viene richiesta la root, risponde con "Hello, world!"
+    if (strcmp(req.path, "/") == 0 || strcmp(req.path, "/index.html") == 0) {
+        const char *response =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: 13\r\n"
+            "\r\n"
+            "Hello, world!";
+        send(client_fd, response, strlen(response), 0);
+    } else {
+        // Se il path non è gestito, restituisce un 404 Not Found
+        const char *not_found_response =
+            "HTTP/1.1 404 Not Found\r\n"
+            "Content-Length: 0\r\n"
+            "\r\n";
+        send(client_fd, not_found_response, strlen(not_found_response), 0);
+    }
+
     close(client_fd);
 }
 
