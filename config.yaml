@@ -1,4 +1,11 @@
 server:
   port: 8080
   max_connections: 100
-  log_level: "info"
+  log_level: info
+  routes:
+    - path: /static/
+      technology: static
+      document_root: /var/www/html
+    - path: /api/
+      technology: reverse_proxy
+      backend: 127.0.0.1:5000

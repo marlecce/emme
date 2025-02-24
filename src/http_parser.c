@@ -7,46 +7,47 @@ int parse_http_request(char *buffer, size_t len, HttpRequest *req) {
     char *end = buffer + len;
     char *line_end;
 
-    // Parse della Request-Line: METHOD SP PATH SP VERSION CRLF
+    // Parse the Request-Line: METHOD SP PATH SP VERSION CRLF
     line_end = strstr(cursor, "\r\n");
     if (!line_end) return -1;
     *line_end = '\0';
-    // Estrai il metodo
+    
+    // Extract the method
     char *method = cursor;
     char *space = strchr(method, ' ');
     if (!space) return -1;
     *space = '\0';
     req->method = method;
     
-    // Estrai il path
+    // Extract the path
     char *path = space + 1;
     space = strchr(path, ' ');
     if (!space) return -1;
     *space = '\0';
     req->path = path;
     
-    // Il resto è la versione
+    // The rest is the HTTP version
     char *version = space + 1;
     req->version = version;
 
-    // Sposta il cursore oltre il CRLF
+    // Move the cursor past the CRLF
     cursor = line_end + 2;
 
-    // Parse degli header
+    // Parse headers
     req->header_count = 0;
     while (cursor < end && !(cursor[0] == '\r' && cursor[1] == '\n')) {
         line_end = strstr(cursor, "\r\n");
         if (!line_end) break;
         *line_end = '\0';
 
-        // Trova il separatore ':'
+        // Find the ':' separator
         char *colon = strchr(cursor, ':');
         if (!colon) return -1;
         *colon = '\0';
         char *field = cursor;
         char *value = colon + 1;
         
-        // Rimuove eventuali spazi iniziali nel value
+        // Remove any leading spaces in the value
         while (*value && isspace((unsigned char)*value)) value++;
 
         if (req->header_count < MAX_HEADERS) {
@@ -54,11 +55,11 @@ int parse_http_request(char *buffer, size_t len, HttpRequest *req) {
             req->headers[req->header_count].value = value;
             req->header_count++;
         }
-        // Altrimenti potresti decidere di ignorare header extra
+        // Otherwise, you might decide to ignore extra headers
 
         cursor = line_end + 2;
     }
 
-    // Il parser ha letto anche la linea vuota che separa header e body
+    // The parser has also read the empty line separating headers and body
     return 0;
 }

@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -Iinclude -D_GNU_SOURCE
 LDFLAGS = -luring -lpthread
 
-SRC = src/main.c src/http_parser.c src/config.c src/server.c
+SRC = src/main.c src/http_parser.c src/config.c src/router.c src/server.c
 OBJ = $(SRC:.c=.o)
 EXEC = emme
 
@@ -21,10 +21,10 @@ test_config: tests/test_config.c src/config.c
 
 # Target per compilare il test del server
 test_server: tests/test_server.c src/server.c
-	$(CC) $(CFLAGS) -Iinclude -o test_server tests/test_server.c src/http_parser.c src/server.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Iinclude -o test_server tests/test_server.c src/http_parser.c src/router.c src/server.c $(LDFLAGS)
 
 test_http_parser: tests/test_http_parser.c
-	$(CC) $(CFLAGS) -Iinclude -o test_http_parser tests/test_http_parser.c src/http_parser.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Iinclude -o test_http_parser tests/test_http_parser.c src/router.c src/http_parser.c $(LDFLAGS)
 
 # Target test: compila ed esegue tutti i test
 test: test_config test_server test_http_parser
@@ -33,4 +33,4 @@ test: test_config test_server test_http_parser
 	@echo \"Running test_http_parser...\"\n./test_http_parser
 
 clean:
-	rm -f $(OBJ) $(EXEC) test_config test_server
+	rm -f $(OBJ) $(EXEC) test_config test_server test_http_parser

@@ -3,7 +3,7 @@
 
 #include "config.h"
 
-void handle_client(int client_fd);
+void handle_client(int client_fd, ServerConfig *config);
 
 int start_server(ServerConfig *config);
 
