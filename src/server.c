@@ -96,7 +96,7 @@ int start_server(ServerConfig *config) {
     // Create a thread pool to handle incoming client connections
     pthread_t workers[config->max_connections];
     for (int i = 0; i < config->max_connections; i++) {
-        pthread_create(&workers[i], NULL, worker_function, NULL);
+        pthread_create(&workers[i], NULL, worker_function, config);
     }
 
     printf("Server listening on port %d...\n", config->port);
