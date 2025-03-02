@@ -55,6 +55,23 @@ int main() {
     assert(strstr(buffer, "HTTP/1.1 200 OK") != NULL);
     printf("Test handle_client passed!\n");
 
+    // Test for a non-existent file: /static/notfound.html
+    const char *request_404 = "GET /static/notfound.html HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    write(sv[0], request_404, strlen(request_404));
+
+    // Handle the new request
+    handle_client(sv[1], &config);
+
+    // Read the response from the server
+    n = read(sv[0], buffer, BUFFER_SIZE - 1);
+    assert(n > 0);
+    buffer[n] = '\0';
+
+    // The response must contain "404 Not Found"
+    assert(strstr(buffer, "HTTP/1.1 404 Not Found") != NULL);
+    printf("Test for non-existing resource (404) passed!\n");
+
+
     close(sv[0]);
     close(sv[1]);
 
