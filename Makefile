@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -Iinclude -D_GNU_SOURCE
 LDFLAGS = -luring -lpthread
 
-SRC = src/main.c src/http_parser.c src/config.c src/router.c src/server.c
+SRC = $(wildcard src/*.c)
 OBJ = $(SRC:.c=.o)
 EXEC = emme
 

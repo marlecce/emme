@@ -9,3 +9,11 @@ server:
     - path: /api/
       technology: reverse_proxy
       backend: 127.0.0.1:5000
+logging:
+  file: server.log
+  level: debug
+  format: plain         # oppure "json"
+  buffer_size: 4096
+  rollover_size: 10485760   # 10 MB
+  rollover_daily: true
+  appender_flags: "file,console"  # Puoi specificare uno o entrambi
