@@ -33,4 +33,4 @@ test: test_config test_server test_http_parser
 	@echo \"Running test_http_parser...\"\n./test_http_parser
 
 clean:
-	rm -f $(OBJ) $(EXEC) test_config test_server test_http_parser
+	rm -f $(OBJ) $(EXEC) test_config test_server test_http_parser *.log
