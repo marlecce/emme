@@ -46,6 +46,9 @@ test_http_parser
 *.idb
 *.pdb
 
+# Logging
+*.log
+
 # Kernel Module Compile Results
 *.mod*
 *.cmd
