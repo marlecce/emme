@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 8443
   max_connections: 100
   log_level: info
   routes:
@@ -19,3 +19,6 @@ logging:
   appender_flags:
     - file
     - console  
+ssl:
+  certificate: certs/dev.crt
+  private_key: certs/dev.key
