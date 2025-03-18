@@ -49,6 +49,10 @@ test_http_parser
 # Logging
 *.log
 
+# Cert
+*.crt
+*.key
+
 # Kernel Module Compile Results
 *.mod*
 *.cmd

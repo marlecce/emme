@@ -9,6 +9,7 @@
         "impl.h": "c",
         "stdio.h": "c",
         "server.h": "c",
-        "http_parser.h": "c"
+        "http_parser.h": "c",
+        "tls.h": "c"
     }
 }

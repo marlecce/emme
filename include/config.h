@@ -14,12 +14,18 @@ typedef struct {
 } Route;
 
 typedef struct {
+    char certificate[256];
+    char private_key[256];
+} SSLConfig;
+
+typedef struct {
     int port;
     int max_connections;
     char log_level[MAX_LOG_LEVEL];
     int route_count;
     Route routes[MAX_ROUTES];
-    LoggingConfig logging; 
+    LoggingConfig logging;
+    SSLConfig ssl;
 } ServerConfig;
 
 int load_config(ServerConfig *config, const char *file_path);

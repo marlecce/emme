@@ -16,39 +16,51 @@ int load_config(ServerConfig *config, const char *file_path) {
     int in_routes = 0;
     int in_logging = 0;
     int in_appender_flags = 0;
+    int in_ssl = 0;
 
     while (fgets(line, sizeof(line), file)) {
+        /* Rimuove newline e ritorno a capo */
         line[strcspn(line, "\r\n")] = '\0';
 
+        /* Determina la sezione corrente in base alla riga letta */
         if (strstr(line, "server:") != NULL) {
             in_routes = 0;
             in_logging = 0;
             in_appender_flags = 0;
+            in_ssl = 0;
             continue;
         } else if (strstr(line, "routes:") != NULL) {
             in_routes = 1;
             in_logging = 0;
             in_appender_flags = 0;
+            in_ssl = 0;
             continue;
         } else if (strstr(line, "logging:") != NULL) {
             in_logging = 1;
             in_routes = 0;
             in_appender_flags = 0;
+            in_ssl = 0;
+            continue;
+        } else if (strstr(line, "ssl:") != NULL) {
+            in_ssl = 1;
+            in_logging = 0;
+            in_routes = 0;
+            in_appender_flags = 0;
             continue;
         }
 
+        /* Parsing della sezione logging per l'array appender_flags */
         if (in_logging && strstr(line, "appender_flags:") != NULL) {
             in_appender_flags = 1;
             config->logging.appender_flags = 0;
             continue;
         }
-        
         if (in_logging && in_appender_flags) {
             char *ptr = line;
-            while (*ptr == ' ' || *ptr == '\t') ptr++; 
-            if (*ptr == '-' ) {
-                ptr++;
-                while (*ptr == ' ' || *ptr == '\t') ptr++;
+            while (*ptr == ' ' || *ptr == '\t') ptr++; // Rimuove spazi iniziali
+            if (*ptr == '-') {
+                ptr++; // Salta il trattino
+                while (*ptr == ' ' || *ptr == '\t') ptr++; // Rimuove spazi dopo il trattino
                 if (strcmp(ptr, "file") == 0)
                     config->logging.appender_flags |= APPENDER_FILE;
                 else if (strcmp(ptr, "console") == 0)
@@ -59,7 +71,8 @@ int load_config(ServerConfig *config, const char *file_path) {
             }
         }
 
-        if (!in_routes && !in_logging) {
+        /* Parsing delle impostazioni globali (fuori dalle sezioni specifiche) */
+        if (!in_routes && !in_logging && !in_ssl) {
             if (strstr(line, "port:") != NULL) {
                 sscanf(line, " port: %d", &config->port);
             } else if (strstr(line, "max_connections:") != NULL) {
@@ -68,6 +81,7 @@ int load_config(ServerConfig *config, const char *file_path) {
                 sscanf(line, " log_level: %15s", config->log_level);
             }
         }
+        /* Parsing della sezione routes */
         else if (in_routes) {
             if (strstr(line, "- path:") != NULL) {
                 if (config->route_count < MAX_ROUTES) {
@@ -88,6 +102,7 @@ int load_config(ServerConfig *config, const char *file_path) {
                 }
             }
         }
+        /* Parsing della sezione logging (escluso l'array appender_flags, già gestito) */
         else if (in_logging && !in_appender_flags) {
             if (strstr(line, "file:") != NULL) {
                 sscanf(line, " file: %255s", config->logging.file);
@@ -114,6 +129,24 @@ int load_config(ServerConfig *config, const char *file_path) {
                 char daily_str[8];
                 sscanf(line, " rollover_daily: %7s", daily_str);
                 config->logging.rollover_daily = (strcmp(daily_str, "true") == 0) ? 1 : 0;
+            }
+        }
+        /* Parsing della sezione SSL */
+        else if (in_ssl) {
+            /* Se la riga non è indentata, consideriamo che la sezione SSL sia terminata */
+            if (line[0] != ' ' && line[0] != '\t') {
+                in_ssl = 0;
+                /* Fall-through per permettere il parsing di questa riga nella sezione globale */
+            } else {
+                /* Rimuovi eventuali spazi iniziali */
+                char *ptr = line;
+                while (*ptr == ' ' || *ptr == '\t') ptr++;
+                if (strstr(ptr, "certificate:") == ptr) {
+                    sscanf(ptr, "certificate: %255s", config->ssl.certificate);
+                } else if (strstr(ptr, "private_key:") == ptr) {
+                    sscanf(ptr, "private_key: %255s", config->ssl.private_key);
+                }
+                continue; // Continua a leggere le righe della sezione SSL
             }
         }
     }

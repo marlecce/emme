@@ -12,6 +12,9 @@
 #include "server.h"
 #include "http_parser.h"
 #include "router.h"
+#include "tls.h"
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #define MAX_EVENTS 100
 #define BUFFER_SIZE 1024
@@ -25,11 +28,26 @@ pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 WorkerTask task_queue[MAX_EVENTS];
 int queue_head = 0, queue_tail = 0;
+SSL_CTX *ssl_ctx = NULL;
 
 void handle_client(int client_fd, ServerConfig *config) {
+    SSL *ssl = SSL_new(ssl_ctx);
+    if (!ssl) {
+        close(client_fd);
+        return;
+    }
+    SSL_set_fd(ssl, client_fd);
+    if (SSL_accept(ssl) <= 0) {
+        ERR_print_errors_fp(stderr);
+        SSL_free(ssl);
+        close(client_fd);
+        return;
+    }
+
     char buffer[BUFFER_SIZE];
-    int n = read(client_fd, buffer, BUFFER_SIZE - 1);
+    int n = SSL_read(ssl, buffer, BUFFER_SIZE - 1);
     if (n <= 0) {
+        SSL_free(ssl);
         close(client_fd);
         return;
     }
@@ -38,12 +56,15 @@ void handle_client(int client_fd, ServerConfig *config) {
     HttpRequest req;
     if (parse_http_request(buffer, n, &req) != 0) {
         const char *bad_response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-        send(client_fd, bad_response, strlen(bad_response), 0);
+        SSL_write(ssl, bad_response, strlen(bad_response));
+        SSL_free(ssl);
         close(client_fd);
         return;
     }
 
-    route_request(&req, buffer, n, config, client_fd);
+    route_request_tls(&req, buffer, n, config, ssl);
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
     close(client_fd);
 }
 
@@ -93,13 +114,15 @@ int start_server(ServerConfig *config) {
         return 1;
     }
 
+    ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key);
+
     // Create a thread pool to handle incoming client connections
     pthread_t workers[config->max_connections];
     for (int i = 0; i < config->max_connections; i++) {
         pthread_create(&workers[i], NULL, worker_function, config);
     }
 
-    printf("Server listening on port %d...\n", config->port);
+    printf("Emme listening on port %d...\n", config->port);
 
     // Main loop using io_uring to accept new connections
     while (1) {
@@ -111,6 +134,9 @@ int start_server(ServerConfig *config) {
         io_uring_wait_cqe(&ring, &cqe);
         client_fd = cqe->res;
         io_uring_cqe_seen(&ring, cqe);
+
+        int flags = fcntl(client_fd, F_GETFL, 0);
+        fcntl(client_fd, F_SETFL, flags & ~O_NONBLOCK);
 
         pthread_mutex_lock(&queue_mutex);
         task_queue[queue_head].client_fd = client_fd;

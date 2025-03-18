@@ -1,16 +1,12 @@
-/* router.c - Routing module for the web server
+/* router.c - Routing module for the web server (TLS version)
  *
  * This module examines the HTTP request (HttpRequest) and, based on the routes
  * defined in the configuration (ServerConfig), decides whether to:
  *   - Serve a static file (using sendfile for zero-copy).
  *   - Forward the request to a backend (reverse proxy).
  *
- * In the case of a reverse proxy, a connection to the backend is established,
- * the request is forwarded, and a bidirectional loop is activated to transfer
- * data in both directions.
- *
- * Additionally, if the request path is "/" (the root), a default HTML page is
- * returned which presents the project and its main features.
+ * In TLS mode, data sent to the client uses SSL_write() and data is read
+ * using SSL_read().
  */
 
  #include <stdio.h>
@@ -26,48 +22,47 @@
  
  #define BUFFER_SIZE 1024
  
- /* serve_static()
+ /* serve_static_tls()
   *
-  * If the HTTP request's path starts with the prefix defined for a route with
-  * technology "static", this function constructs the full file path (document_root + remaining part of the path),
-  * opens the file, and sends it to the client using sendfile() (zero-copy).
+  * If the HTTP request's path starts with a static route, constructs the full file path,
+  * opens the file, and sends it to the client using SSL_write() and sendfile() for zero-copy.
   * If the file is not found, a 404 response is sent.
   */
- int serve_static(HttpRequest *req, ServerConfig *config, int client_fd) {
-     // Check that req->path is not NULL
-     if (!req || !req->path) {
+ int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl) {
+     if (!req || !req->path)
          return -1;
-     }
-     
+ 
      for (int i = 0; i < config->route_count; i++) {
          if (strcmp(config->routes[i].technology, "static") == 0) {
              size_t prefix_len = strlen(config->routes[i].path);
-             // If the request path is shorter than the route prefix, skip this route.
-             if (strlen(req->path) < prefix_len) {
+             if (strlen(req->path) < prefix_len)
                  continue;
-             }
-             // Check if the request path starts with the route prefix.
              if (strncmp(req->path, config->routes[i].path, prefix_len) == 0) {
                  char filepath[512];
-                 // Construct the full path: document_root + (remaining part of the path)
-                 if ((size_t)snprintf(filepath, sizeof(filepath), "%s%s", 
-                                      config->routes[i].document_root, req->path + prefix_len) >= sizeof(filepath)) {
-                     fprintf(stderr, "serve_static: Path too long\n");
+                 if ((size_t)snprintf(filepath, sizeof(filepath), "%s%s",
+                                        config->routes[i].document_root, req->path + prefix_len) >= sizeof(filepath)) {
+                     fprintf(stderr, "serve_static_tls: Path too long\n");
                      return -1;
                  }
                  int fd = open(filepath, O_RDONLY);
                  if (fd < 0) {
                      const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-                     send(client_fd, not_found, strlen(not_found), 0);
+                     SSL_write(ssl, not_found, strlen(not_found));
                      return -1;
                  }
                  off_t filesize = lseek(fd, 0, SEEK_END);
                  lseek(fd, 0, SEEK_SET);
                  char header[256];
                  snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", filesize);
-                 send(client_fd, header, strlen(header), 0);
-                 off_t offset = 0;
-                 sendfile(client_fd, fd, &offset, filesize);
+                 SSL_write(ssl, header, strlen(header));
+                 // Here, we use sendfile() on the plain file descriptor.
+                 // Since sendfile() writes directly from fd to socket,
+                 // we need to flush the TLS record first.
+                 char filebuf[BUFFER_SIZE];
+                 ssize_t bytes;
+                 while ((bytes = read(fd, filebuf, sizeof(filebuf))) > 0) {
+                     SSL_write(ssl, filebuf, bytes);
+                 }
                  close(fd);
                  return 0;
              }
@@ -76,89 +71,60 @@
      return -1;
  }
  
- /* set_nonblocking()
+ /* proxy_bidirectional_tls()
   *
-  * Sets the file descriptor fd to non-blocking mode.
+  * Implements a bidirectional forwarding loop between a TLS client and a backend server.
+  * Data from the client is read with SSL_read() and forwarded to the backend via write(),
+  * while data from the backend is read with read() and forwarded to the client using SSL_write().
   */
- int set_nonblocking(int fd) {
-     int flags = fcntl(fd, F_GETFL, 0);
-     if (flags == -1) return -1;
-     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
- }
- 
- /* proxy_bidirectional()
-  *
-  * Starts a bidirectional loop to transfer data between the backend and the client,
-  * using poll() to monitor both sockets.
-  * This function continues transferring data until one of the two connections is closed.
-  */
- int proxy_bidirectional(int backend_fd, int client_fd) {
-     if (set_nonblocking(backend_fd) < 0 || set_nonblocking(client_fd) < 0) {
-         return -1;
-     }
-     struct pollfd fds[2];
-     fds[0].fd = backend_fd;
-     fds[0].events = POLLIN;
-     fds[1].fd = client_fd;
-     fds[1].events = POLLIN;
- 
-     char buf[BUFFER_SIZE];
+ int proxy_bidirectional_tls(SSL *ssl, int backend_fd) {
      int done = 0;
+     char buf[BUFFER_SIZE];
      while (!done) {
-         int ret = poll(fds, 2, 3000);
-         if (ret <= 0) break;
-         if (fds[0].revents & POLLIN) {
-             int n = read(backend_fd, buf, sizeof(buf));
-             if (n > 0) {
-                 int sent = 0;
-                 while (sent < n) {
-                     int s = send(client_fd, buf + sent, n - sent, 0);
-                     if (s < 0) break;
-                     sent += s;
-                 }
-             } else {
-                 done = 1;
+         /* Read from backend (plain) */
+         int n = read(backend_fd, buf, sizeof(buf));
+         if (n > 0) {
+             int sent = 0;
+             while (sent < n) {
+                 int s = SSL_write(ssl, buf + sent, n - sent);
+                 if (s <= 0) { done = 1; break; }
+                 sent += s;
              }
+         } else if (n < 0) {
+             done = 1;
          }
-         if (fds[1].revents & POLLIN) {
-             int n = read(client_fd, buf, sizeof(buf));
-             if (n > 0) {
-                 int sent = 0;
-                 while (sent < n) {
-                     int s = send(backend_fd, buf + sent, n - sent, 0);
-                     if (s < 0) break;
-                     sent += s;
-                 }
-             } else {
-                 done = 1;
+         /* Read from client (TLS) */
+         n = SSL_read(ssl, buf, sizeof(buf));
+         if (n > 0) {
+             int sent = 0;
+             while (sent < n) {
+                 int s = send(backend_fd, buf + sent, n - sent, 0);
+                 if (s <= 0) { done = 1; break; }
+                 sent += s;
              }
+         } else if (n < 0) {
+             done = 1;
          }
      }
      return 0;
  }
  
- /* proxy_request()
+ /* proxy_request_tls()
   *
-  * Implements full request forwarding to the backend for reverse_proxy requests.
-  * It searches the configured routes for one that matches the request path.
-  * - Extracts the IP address and port from the backend field (format "IP:PORT").
-  * - Opens a TCP connection to the backend and forwards the entire HTTP request (raw_request).
-  * - Starts proxy_bidirectional() to transfer data between backend and client bidirectionally.
+  * Forwards the entire HTTP request to a backend for reverse proxy functionality.
+  * Then activates proxy_bidirectional_tls() to forward data bidirectionally.
   */
- int proxy_request(HttpRequest *req, char *raw_request, int req_len, ServerConfig *config, int client_fd) {
+ int proxy_request_tls(HttpRequest *req, char *raw_request, int req_len, ServerConfig *config, SSL *ssl) {
      for (int i = 0; i < config->route_count; i++) {
          if (strcmp(config->routes[i].technology, "reverse_proxy") == 0) {
              size_t prefix_len = strlen(config->routes[i].path);
-             // Ensure the request path is long enough before comparing
-             if (strlen(req->path) < prefix_len) {
+             if (strlen(req->path) < prefix_len)
                  continue;
-             }
              if (strncmp(req->path, config->routes[i].path, prefix_len) == 0) {
                  char ip[64];
                  int port;
-                 if (sscanf(config->routes[i].backend, "%63[^:]:%d", ip, &port) != 2) {
+                 if (sscanf(config->routes[i].backend, "%63[^:]:%d", ip, &port) != 2)
                      return -1;
-                 }
                  int backend_fd = socket(AF_INET, SOCK_STREAM, 0);
                  if (backend_fd < 0) return -1;
                  struct sockaddr_in backend_addr;
@@ -173,15 +139,13 @@
                      close(backend_fd);
                      return -1;
                  }
-                 // Forward the entire HTTP request to the backend
                  int sent = 0;
                  while (sent < req_len) {
                      int n = send(backend_fd, raw_request + sent, req_len - sent, 0);
                      if (n <= 0) break;
                      sent += n;
                  }
-                 // Start bidirectional forwarding between backend and client
-                 proxy_bidirectional(backend_fd, client_fd);
+                 proxy_bidirectional_tls(ssl, backend_fd);
                  close(backend_fd);
                  return 0;
              }
@@ -190,16 +154,15 @@
      return -1;
  }
  
- /* route_request()
+ /* route_request_tls()
   *
-  * Routing function that decides how to handle the request:
-  * - If the request path is "/", it serves a default HTML page.
-  * - Otherwise, it first tries to serve the request as a static file (serve_static()).
-  * - If that fails, it attempts to forward the request to the backend via reverse proxy (proxy_request()).
-  * raw_request and req_len represent the buffer containing the full HTTP request.
+  * Decides how to handle the request:
+  *   - If the request path is "/", serves a default HTML page.
+  *   - Otherwise, it first tries to serve the request as a static file.
+  *   - If that fails, it attempts to forward the request to the backend via reverse proxy.
+  * Note: All communication with the client is via the SSL pointer.
   */
- int route_request(HttpRequest *req, char *raw_request, int req_len, ServerConfig *config, int client_fd) {
-     // Serve default page if the request is for the root "/"
+ int route_request_tls(HttpRequest *req, char *raw_request, int req_len, ServerConfig *config, SSL *ssl) {
      if (strcmp(req->path, "/") == 0) {
          const char *html_content = "<html><head><title>High Performance Web Server</title></head>"
                                     "<body><h1>Welcome to High Performance Web Server</h1>"
@@ -209,18 +172,18 @@
          size_t content_length = strlen(html_content);
          char header[256];
          snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %zu\r\n\r\n", content_length);
-         send(client_fd, header, strlen(header), 0);
-         send(client_fd, html_content, content_length, 0);
+         SSL_write(ssl, header, strlen(header));
+         SSL_write(ssl, html_content, content_length);
          return 0;
      }
      
-     if (serve_static(req, config, client_fd) == 0)
+     if (serve_static_tls(req, config, ssl) == 0)
          return 0;
-     if (proxy_request(req, raw_request, req_len, config, client_fd) == 0)
+     if (proxy_request_tls(req, raw_request, req_len, config, ssl) == 0)
          return 0;
      
      const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-     send(client_fd, not_found, strlen(not_found), 0);
+     SSL_write(ssl, not_found, strlen(not_found));
      return -1;
  }
  

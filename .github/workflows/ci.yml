@@ -18,10 +18,34 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential liburing-dev
+          sudo apt-get install -y build-essential liburing-dev libssl-dev
 
       - name: Compile project
         run: make
 
       - name: Run tests
         run: make test
+
+      - name: Create release artifact
+        run: tar -czvf emme.tar.gz emme
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref }}
+          name: Release ${{ github.ref }}
+          body: |
+            Precompiled binary for emme (HTTPS server) built with CI.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref }}
+          asset_path: emme.tar.gz
+          asset_name: emme.tar.gz
+          asset_content_type: application/gzip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
