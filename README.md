@@ -38,6 +38,7 @@ This project implements a high-performance web server in C that aims to outperfo
 Ensure that you have the required dependencies installed:
 - `liburing`
 - `pthread`
+- `libYAML`
 - OpenSSL development libraries (e.g., `libssl-dev`)
 
 To compile the project, run:

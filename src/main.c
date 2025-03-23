@@ -9,20 +9,20 @@ int main() {
     char *config_path = "config.yaml";
 
     if (load_config(&config, config_path) != 0) {
-        fprintf(stderr, "Errore nel caricamento della configurazione\n");
+        log_message(LOG_LEVEL_ERROR, "Error loading configuration");
         return 1;
     }
 
     if (log_init(&config.logging) != 0) {
-        fprintf(stderr, "Errore nell'inizializzazione del logging\n");
+        log_message(LOG_LEVEL_ERROR, "Error initializing logging");
         exit(EXIT_FAILURE);
     }
 
-    log_message(LOG_LEVEL_INFO, "Avvio del server sulla porta %d con %d connessioni massime",
+    log_message(LOG_LEVEL_INFO, "Starting server on port %d with a maximum of %d connections",
         config.port, config.max_connections);
 
     if (start_server(&config) != 0) {
-        log_message(LOG_LEVEL_ERROR, "Errore nell'avvio del server");
+        log_message(LOG_LEVEL_ERROR, "Error starting server");
         log_shutdown();
         exit(EXIT_FAILURE);
     }

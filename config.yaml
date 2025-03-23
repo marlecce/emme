@@ -2,13 +2,7 @@ server:
   port: 8443
   max_connections: 100
   log_level: info
-  routes:
-    - path: /static/
-      technology: static
-      document_root: /var/www/html
-    - path: /api/
-      technology: reverse_proxy
-      backend: 127.0.0.1:5000
+
 logging:
   file: emme.log
   level: debug
@@ -19,6 +13,15 @@ logging:
   appender_flags:
     - file
     - console  
+
 ssl:
-  certificate: certs/dev.crt
-  private_key: certs/dev.key
+  certificate: "certs/dev.crt"
+  private_key: "certs/dev.key"
+
+routes:
+    - path: "/static/"
+      technology: "static"
+      document_root: "/var/www/html"
+    - path: "/api/"
+      technology: "reverse_proxy"
+      backend: "127.0.0.1:8081"

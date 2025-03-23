@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -Iinclude -D_GNU_SOURCE
-LDFLAGS = -luring -lpthread -lssl -lcrypto
+LDFLAGS = -luring -lpthread -lssl -lcrypto -lyaml
 
 SRC = $(wildcard src/*.c)
 OBJ = $(SRC:.c=.o)
@@ -17,7 +17,7 @@ $(EXEC): $(OBJ)
 
 # Target per compilare il test della configurazione
 test_config: tests/test_config.c src/config.c
-	$(CC) $(CFLAGS) -Iinclude -o test_config tests/test_config.c src/config.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Iinclude -o test_config tests/test_config.c src/config.c src/log.c $(LDFLAGS)
 
 # Target per compilare il test del server
 test_server: tests/test_server.c src/server.c
