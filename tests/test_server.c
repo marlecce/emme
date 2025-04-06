@@ -9,9 +9,10 @@
 #include <pthread.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include "server.h"
-#include "config.h"
-#include "http_parser.h"
+#include <server.h>
+#include <config.h>
+#include <http_parser.h>
+#include <thread_pool.h>
 
 #define BUFFER_SIZE 4096
 

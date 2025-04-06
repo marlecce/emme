@@ -21,7 +21,7 @@ test_config: tests/test_config.c src/config.c
 
 # Target per compilare il test del server
 test_server: tests/test_server.c src/server.c
-	$(CC) $(CFLAGS) -Iinclude -o test_server tests/test_server.c src/tls.c src/http_parser.c src/router.c src/server.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Iinclude -o test_server tests/test_server.c src/tls.c src/http_parser.c src/router.c src/thread_pool.c src/server.c $(LDFLAGS)
 
 test_http_parser: tests/test_http_parser.c
 	$(CC) $(CFLAGS) -Iinclude -o test_http_parser tests/test_http_parser.c src/router.c src/http_parser.c $(LDFLAGS)

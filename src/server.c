@@ -15,20 +15,18 @@
 #include "tls.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include "thread_pool.h"
 
-#define MAX_EVENTS 100
 #define BUFFER_SIZE 1024
 #define QUEUE_DEPTH 64
 
-typedef struct {
-    int client_fd;
-} WorkerTask;
-
-pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
-WorkerTask task_queue[MAX_EVENTS];
-int queue_head = 0, queue_tail = 0;
 SSL_CTX *ssl_ctx = NULL;
+
+void client_task(void *arg) {
+    ClientTaskData *data = (ClientTaskData *)arg;
+    handle_client(data->client_fd, data->config);
+    free(data);  // Free the allocated memory after processing.
+}
 
 void handle_client(int client_fd, ServerConfig *config) {
     SSL *ssl = SSL_new(ssl_ctx);
@@ -68,84 +66,102 @@ void handle_client(int client_fd, ServerConfig *config) {
     close(client_fd);
 }
 
-// Function used by the thread pool to process incoming requests
-void *worker_function(void *arg) {
-    ServerConfig *config = (ServerConfig *)arg;
-    while (1) {
-        pthread_mutex_lock(&queue_mutex);
-        while (queue_head == queue_tail) {
-            pthread_cond_wait(&queue_cond, &queue_mutex);
-        }
-        WorkerTask task = task_queue[queue_tail];
-        queue_tail = (queue_tail + 1) % MAX_EVENTS;
-        pthread_mutex_unlock(&queue_mutex);
-
-        handle_client(task.client_fd, config);
-    }
-    return NULL;
-}
-
 int start_server(ServerConfig *config) {
     int server_fd, client_fd;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
     struct io_uring ring;
-    io_uring_queue_init(QUEUE_DEPTH, &ring, 0);
+    
+    // Create and initialize io_uring for accepting connections.
+    if (io_uring_queue_init(QUEUE_DEPTH, &ring, 0) != 0) {
+        perror("io_uring_queue_init failed");
+        return 1;
+    }
 
+    // Create the server socket.
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1) {
         perror("Socket creation error");
         return 1;
     }
 
+    // Bind the socket to the address and port.
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(config->port);
-
     if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
         perror("Bind error");
         close(server_fd);
         return 1;
     }
 
+    // Start listening for incoming connections.
     if (listen(server_fd, SOMAXCONN) == -1) {
         perror("Listen error");
         close(server_fd);
         return 1;
     }
 
+    // Initialize SSL context.
     ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key);
 
-    // Create a thread pool to handle incoming client connections
-    pthread_t workers[config->max_connections];
-    for (int i = 0; i < config->max_connections; i++) {
-        pthread_create(&workers[i], NULL, worker_function, config);
+    // Create the dynamic thread pool.
+    ThreadPool *pool = thread_pool_create(4, config->max_connections);
+    if (!pool) {
+        fprintf(stderr, "Failed to create thread pool\n");
+        close(server_fd);
+        return 1;
     }
-
     printf("Emme listening on port %d...\n", config->port);
 
     // Main loop using io_uring to accept new connections
     while (1) {
         struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+        if (!sqe) {
+            fprintf(stderr, "Failed to get submission queue entry\n");
+            break;
+        }
+
         io_uring_prep_accept(sqe, server_fd, (struct sockaddr *)&client_addr, &client_len, 0);
-        io_uring_submit(&ring);
+        if (io_uring_submit(&ring) < 0) {
+            perror("io_uring_submit failed");
+            break;
+        }
 
         struct io_uring_cqe *cqe;
-        io_uring_wait_cqe(&ring, &cqe);
+        if (io_uring_wait_cqe(&ring, &cqe) < 0) {
+            perror("io_uring_wait_cqe failed");
+            break;
+        }
         client_fd = cqe->res;
         io_uring_cqe_seen(&ring, cqe);
 
+        // Set client_fd to blocking mode (if needed)
         int flags = fcntl(client_fd, F_GETFL, 0);
         fcntl(client_fd, F_SETFL, flags & ~O_NONBLOCK);
 
-        pthread_mutex_lock(&queue_mutex);
-        task_queue[queue_head].client_fd = client_fd;
-        queue_head = (queue_head + 1) % MAX_EVENTS;
-        pthread_cond_signal(&queue_cond);
-        pthread_mutex_unlock(&queue_mutex);
+        // Allocate and prepare a ClientTaskData structure.
+        ClientTaskData *task_data = malloc(sizeof(ClientTaskData));
+        if (!task_data) {
+            perror("Failed to allocate memory for client task");
+            close(client_fd);
+            continue;
+        }
+        task_data->client_fd = client_fd;
+        task_data->config = config;
+
+         // Add the client handling task to the thread pool.
+         if (!thread_pool_add_task(pool, client_task, task_data)) {
+            fprintf(stderr, "Failed to add task to thread pool\n");
+            free(task_data);
+            close(client_fd);
+        }
     }
 
+    // Cleanup resources on server shutdown.
+    thread_pool_destroy(pool);
     close(server_fd);
     io_uring_queue_exit(&ring);
+    cleanup_ssl_context(ssl_ctx);
     return 0;
 }

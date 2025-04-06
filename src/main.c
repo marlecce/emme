@@ -9,16 +9,16 @@ int main() {
     char *config_path = "config.yaml";
 
     if (load_config(&config, config_path) != 0) {
-        log_message(LOG_LEVEL_ERROR, "Error loading configuration");
+        fprintf(stderr, "Error loading configuration");
         return 1;
     }
 
     if (log_init(&config.logging) != 0) {
-        log_message(LOG_LEVEL_ERROR, "Error initializing logging");
+        fprintf(stderr, "Error initializing logging");
         exit(EXIT_FAILURE);
     }
 
-    log_message(LOG_LEVEL_INFO, "Starting server on port %d with a maximum of %d connections",
+    log_message(LOG_LEVEL_INFO, "Starting server on port %d",
         config.port, config.max_connections);
 
     if (start_server(&config) != 0) {
