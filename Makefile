@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -Iinclude -D_GNU_SOURCE
-LDFLAGS = -luring -lpthread -lssl -lcrypto -lyaml
+LDFLAGS = -luring -lpthread -lssl -lcrypto -lyaml -lnghttp2
 
 SRC = $(wildcard src/*.c)
 OBJ = $(SRC:.c=.o)
@@ -21,10 +21,10 @@ test_config: tests/test_config.c src/config.c
 
 # Target per compilare il test del server
 test_server: tests/test_server.c src/server.c
-	$(CC) $(CFLAGS) -Iinclude -o test_server tests/test_server.c src/tls.c src/http_parser.c src/router.c src/thread_pool.c src/server.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Iinclude -o test_server tests/test_server.c src/tls.c src/http_parser.c src/router.c src/thread_pool.c src/server.c src/log.c $(LDFLAGS)
 
 test_http_parser: tests/test_http_parser.c
-	$(CC) $(CFLAGS) -Iinclude -o test_http_parser tests/test_http_parser.c src/router.c src/http_parser.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -Iinclude -o test_http_parser tests/test_http_parser.c src/router.c src/http_parser.c src/log.c $(LDFLAGS)
 
 # Target test: compila ed esegue tutti i test
 test: test_config test_server test_http_parser

@@ -5,16 +5,21 @@
 #include <time.h>
 #include <errno.h>
 
-#define TASK_QUEUE_INITIAL_CAPACITY 64
+#define TASK_QUEUE_INITIAL_CAPACITY 256
 #define THREAD_IDLE_TIMEOUT 5 // Idle timeout in seconds
 
-// Internal task queue structure.
 typedef struct {
-    Task *tasks;       // Array of tasks.
-    size_t capacity;   // Total capacity of the queue.
-    size_t count;      // Number of tasks currently in the queue.
-    size_t front;      // Index of the first task.
-    size_t rear;       // Index at which to insert the next task.
+    Task task;
+    char padding[64 - sizeof(Task)];
+} CacheAlignedTask;
+
+typedef struct {
+    CacheAlignedTask *tasks;
+    size_t capacity;
+    volatile size_t count;
+    volatile size_t front;
+    volatile size_t rear;
+    char padding[64];
 } TaskQueue;
 
 // The ThreadPool structure.
@@ -32,7 +37,7 @@ struct ThreadPool {
 // Initializes the task queue.
 static void task_queue_init(TaskQueue *queue) {
     queue->capacity = TASK_QUEUE_INITIAL_CAPACITY;
-    queue->tasks = malloc(queue->capacity * sizeof(Task));
+    queue->tasks = malloc(queue->capacity * sizeof(CacheAlignedTask));
     queue->count = 0;
     queue->front = 0;
     queue->rear = 0;
@@ -46,23 +51,23 @@ static void task_queue_destroy(TaskQueue *queue) {
 // Pushes a task onto the task queue; returns true on success.
 static bool task_queue_push(TaskQueue *queue, Task task) {
     if (queue->count == queue->capacity) {
-        // Resize the task queue array.
         size_t new_capacity = queue->capacity * 2;
-        Task *new_tasks = realloc(queue->tasks, new_capacity * sizeof(Task));
-        if (!new_tasks)
-            return false;
-        // Rearrange tasks if the queue is not contiguous.
+        CacheAlignedTask *new_tasks = malloc(new_capacity * sizeof(CacheAlignedTask));
+        if (!new_tasks) return false;
+
         if (queue->front > 0) {
             for (size_t i = 0; i < queue->count; i++) {
-                new_tasks[i] = queue->tasks[(queue->front + i) % queue->capacity];
+                new_tasks[i].task = queue->tasks[(queue->front + i) % queue->capacity].task;
             }
             queue->front = 0;
             queue->rear = queue->count;
         }
+        free(queue->tasks);
         queue->tasks = new_tasks;
         queue->capacity = new_capacity;
     }
-    queue->tasks[queue->rear] = task;
+
+    queue->tasks[queue->rear].task = task;
     queue->rear = (queue->rear + 1) % queue->capacity;
     queue->count++;
     return true;
@@ -70,9 +75,9 @@ static bool task_queue_push(TaskQueue *queue, Task task) {
 
 // Pops a task from the task queue; returns true if a task was retrieved.
 static bool task_queue_pop(TaskQueue *queue, Task *task) {
-    if (queue->count == 0)
-        return false;
-    *task = queue->tasks[queue->front];
+    if (queue->count == 0) return false;
+    
+    *task = queue->tasks[queue->front].task;
     queue->front = (queue->front + 1) % queue->capacity;
     queue->count--;
     return true;
@@ -144,22 +149,29 @@ ThreadPool *thread_pool_create(size_t min_threads, size_t max_threads) {
 // of threads and we have not reached max_threads, a new thread is spawned.
 bool thread_pool_add_task(ThreadPool *pool, void (*function)(void *), void *arg) {
     pthread_mutex_lock(&pool->lock);
+    
     if (pool->shutdown) {
         pthread_mutex_unlock(&pool->lock);
         return false;
     }
-    Task task;
-    task.function = function;
-    task.arg = arg;
+
+    // Pre-allocazione della memoria per evitare allocazioni durante l'esecuzione
+    if (pool->queue.count >= pool->queue.capacity * 0.8) {
+        size_t new_capacity = pool->queue.capacity * 2;
+        CacheAlignedTask *new_tasks = realloc(pool->queue.tasks, 
+                                             new_capacity * sizeof(CacheAlignedTask));
+        if (new_tasks) {
+            pool->queue.tasks = new_tasks;
+            pool->queue.capacity = new_capacity;
+        }
+    }
+
+    Task task = {function, arg};
     if (!task_queue_push(&pool->queue, task)) {
         pthread_mutex_unlock(&pool->lock);
         return false;
     }
-    // Dynamically increase the thread count if needed.
-    if (pool->queue.count > pool->num_threads && pool->num_threads < pool->max_threads) {
-        pthread_create(&pool->threads[pool->num_threads], NULL, worker_thread, pool);
-        pool->num_threads++;
-    }
+
     pthread_cond_signal(&pool->cond);
     pthread_mutex_unlock(&pool->lock);
     return true;

@@ -14,8 +14,6 @@
 #include <http_parser.h>
 #include <thread_pool.h>
 
-#define BUFFER_SIZE 4096
-
 typedef struct {
     int fd;
     ServerConfig *config;

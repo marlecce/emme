@@ -142,9 +142,17 @@ static void *logger_thread_func(void *arg) {
 
 /* Inizializza il modulo di logging */
 int log_init(const LoggingConfig *config) {
+
+    // Initialize last_rollover with the current time
+    if (clock_gettime(CLOCK_REALTIME, &last_rollover) != 0)
+    {
+        perror("Failed to initialize last_rollover");
+        return -1;
+    }
+
     if (!config || config->file[0] == '\0') return -1;
     current_config = *config;
-
+   
     /* Alloca il buffer di log */
     log_buffer_size = (config->buffer_size > 0) ? config->buffer_size : 1024;
     log_buffer = malloc(sizeof(LogEntry) * log_buffer_size);

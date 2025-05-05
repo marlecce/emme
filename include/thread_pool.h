@@ -5,10 +5,9 @@
 #include <stdbool.h>
 #include <config.h>
 
-// A task represents a unit of work for the thread pool.
 typedef struct {
-    void (*function)(void *);  // Task function pointer.
-    void *arg;                 // Argument passed to the function.
+    void (*function)(void *);
+    void *arg;
 } Task;
 
 typedef struct {

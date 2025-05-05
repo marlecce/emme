@@ -10,6 +10,7 @@
         "stdio.h": "c",
         "server.h": "c",
         "http_parser.h": "c",
-        "tls.h": "c"
+        "tls.h": "c",
+        "http2_response.h": "c"
     }
 }

@@ -18,6 +18,10 @@ typedef struct {
     HttpHeader headers[MAX_HEADERS];
 } HttpRequest;
 
+typedef struct {
+    HttpRequest req;
+} StreamData;
+
 int parse_http_request(char *buffer, size_t len, HttpRequest *req);
 
 #endif

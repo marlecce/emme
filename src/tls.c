@@ -3,47 +3,79 @@
 #include <openssl/err.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <log.h>
 
-SSL_CTX *create_ssl_context(const char *cert_file, const char *key_file) {
-    const SSL_METHOD *method;
-    SSL_CTX *ctx;
+static const unsigned char protos[] = "\x02h2\x08http/1.1";
+static const unsigned int protos_len = 12;
 
-    OpenSSL_add_ssl_algorithms();
-    method = TLS_server_method();
-    ctx = SSL_CTX_new(method);
-    if (!ctx) {
-        fprintf(stderr, "SSL context creation failed\n");
-        ERR_print_errors_fp(stderr);
-        exit(EXIT_FAILURE);
+static int alpn_select_cb(SSL *ssl,
+                          const unsigned char **out,
+                          unsigned char *outlen,
+                          const unsigned char *in,
+                          unsigned int inlen,
+                          void *arg);
+
+SSL_CTX *create_ssl_context(const char *cert_path, const char *key_path)
+{
+    SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+    if (!ctx)
+    {
+        return NULL;
     }
 
-    // Load the certificate
-    if (SSL_CTX_use_certificate_file(ctx, cert_file, SSL_FILETYPE_PEM) <= 0) {
-        fprintf(stderr, "Certification loading failed\n");
-        ERR_print_errors_fp(stderr);
-        exit(EXIT_FAILURE);
+    SSL_CTX_set_options(ctx,
+                        SSL_OP_NO_SSLv2 |
+                            SSL_OP_NO_SSLv3 |
+                            SSL_OP_NO_TLSv1 |
+                            SSL_OP_NO_TLSv1_1);
+
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+
+    if (SSL_CTX_set_alpn_protos(ctx, protos, protos_len) != 0)
+    {
+        log_message(LOG_LEVEL_ERROR, "Failed to set ALPN protocols");
+        SSL_CTX_free(ctx);
+        return NULL;
     }
 
-    // Load the private key
-    if (SSL_CTX_use_PrivateKey_file(ctx, key_file, SSL_FILETYPE_PEM) <= 0) {
-        fprintf(stderr, "Private key loading failed\n");
-        ERR_print_errors_fp(stderr);
-        exit(EXIT_FAILURE);
+    SSL_CTX_set_alpn_select_cb(ctx, alpn_select_cb, NULL);
+
+    if (SSL_CTX_use_certificate_file(ctx, cert_path, SSL_FILETYPE_PEM) <= 0)
+    {
+        log_message(LOG_LEVEL_ERROR, "Failed to load certificate file: %s",
+                    ERR_error_string(ERR_get_error(), NULL));
+        SSL_CTX_free(ctx);
+        return NULL;
     }
 
-    // Verify private key matches the certificate
-    if (!SSL_CTX_check_private_key(ctx)) {
-        fprintf(stderr, "Private key does not match the certificate\n");
-        exit(EXIT_FAILURE);
+    if (SSL_CTX_use_PrivateKey_file(ctx, key_path, SSL_FILETYPE_PEM) <= 0)
+    {
+        log_message(LOG_LEVEL_ERROR, "Failed to load private key file: %s",
+                    ERR_error_string(ERR_get_error(), NULL));
+        SSL_CTX_free(ctx);
+        return NULL;
     }
 
-    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
-    SSL_CTX_set_ecdh_auto(ctx, 1); 
+    SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_SERVER);
+    SSL_CTX_set_session_id_context(ctx, (const unsigned char *)"emme", 4);
 
     return ctx;
 }
 
-void cleanup_ssl_context(SSL_CTX *ctx) {
+static int alpn_select_cb(SSL *ssl, const unsigned char **out, unsigned char *outlen,
+                          const unsigned char *in, unsigned int inlen, void *arg)
+{
+    (void)ssl;
+    (void)arg;
+    if (SSL_select_next_proto((unsigned char **)out, outlen, protos, protos_len, in, inlen) != OPENSSL_NPN_NEGOTIATED)
+    {
+        return SSL_TLSEXT_ERR_NOACK;
+    }
+    return SSL_TLSEXT_ERR_OK;
+}
+
+void cleanup_ssl_context(SSL_CTX *ctx)
+{
     SSL_CTX_free(ctx);
     EVP_cleanup();
 }

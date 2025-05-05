@@ -111,6 +111,7 @@ Ensure that you have the required dependencies installed:
 - `liburing`
 - `pthread`
 - `libYAML`
+- `libnghttp2-dev`
 - OpenSSL development libraries (e.g., `libssl-dev`)
 
 To compile the project, run:
@@ -131,4 +132,10 @@ The server will listen on the configured HTTPS port (e.g., 8443) and handle inco
 
 ```bash
 curl -vk https://localhost:8443
+```
+
+## Performance tests
+
+```bash
+h2load -n100 -c10 -m2 https://localhost:8443/
 ```
