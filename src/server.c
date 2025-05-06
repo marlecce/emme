@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/epoll.h>
@@ -21,8 +22,9 @@
 #include "http2_response.h"
 
 SSL_CTX *ssl_ctx = NULL;
+static struct io_uring global_ring;
 
-static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config);
+static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring);
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config);
 
 static ssize_t send_callback(nghttp2_session *session, const uint8_t *data, size_t length, int flags, void *user_data)
@@ -246,80 +248,87 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
     return 0;
 }
 
-static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config)
+static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring)
 {
-    (void)client_fd;
     (void)config;
-
-    int rv;
-
-    struct timeval timeout;
-    timeout.tv_sec = 30;
-    timeout.tv_usec = 0;
-    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
+    int flags = fcntl(client_fd, F_GETFL, 0);
+    fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+    
     nghttp2_session_callbacks *callbacks;
     nghttp2_session *session;
-
-    if (nghttp2_session_callbacks_new(&callbacks) != 0)
-    {
+    if (nghttp2_session_callbacks_new(&callbacks) != 0) {
         log_message(LOG_LEVEL_ERROR, "Failed to initialize HTTP/2 callbacks");
         return;
     }
-
     nghttp2_session_callbacks_set_send_callback(callbacks, send_callback);
     nghttp2_session_callbacks_set_recv_callback(callbacks, recv_callback);
     nghttp2_session_callbacks_set_on_header_callback(callbacks, on_header_callback);
     nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, on_frame_recv_callback);
     nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
-
-    if (nghttp2_session_server_new(&session, callbacks, ssl) != 0)
-    {
-        log_message(LOG_LEVEL_ERROR, "Failed to create HTTP/2 session");
+    
+    if (nghttp2_session_server_new(&session, callbacks, ssl) != 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to create nghttp2 session");
         nghttp2_session_callbacks_del(callbacks);
         return;
     }
-
     log_message(LOG_LEVEL_INFO, "HTTP/2 session started");
-
-    // Send the initial SETTINGS frame
-    rv = nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, NULL, 0);
-    if (rv < 0)
-    {
+    
+    // Submit initial SETTINGS frame.
+    int rv = nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, NULL, 0);
+    if (rv < 0) {
         log_message(LOG_LEVEL_ERROR, "Failed to send initial SETTINGS frame: %s", nghttp2_strerror(rv));
         nghttp2_session_del(session);
         nghttp2_session_callbacks_del(callbacks);
         return;
     }
-
+    
+    rv = 0;
     while (nghttp2_session_want_read(session) || nghttp2_session_want_write(session))
     {
-        rv = nghttp2_session_recv(session);
-        if (rv < 0)
-        {
-            if (rv == NGHTTP2_ERR_EOF)
-            {
-                log_message(LOG_LEVEL_INFO, "HTTP/2 session closed by client");
+        struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+        if (!sqe) {
+            log_message(LOG_LEVEL_ERROR, "Failed to get io_uring SQE");
+            break;
+        }
+        io_uring_prep_poll_add(sqe, client_fd, POLLIN | POLLOUT);
+        int ret = io_uring_submit(ring);
+        if (ret < 0) {
+            log_message(LOG_LEVEL_ERROR, "io_uring_submit failed: %s", strerror(-ret));
+            break;
+        }
+        struct io_uring_cqe *cqe;
+        ret = io_uring_wait_cqe(ring, &cqe);
+        if (ret < 0) {
+            log_message(LOG_LEVEL_ERROR, "io_uring_wait_cqe failed: %s", strerror(-ret));
+            break;
+        }
+        int revents = cqe->res;
+        io_uring_cqe_seen(ring, cqe);
+        
+        if (revents < 0) {
+            log_message(LOG_LEVEL_ERROR, "Poll failed: %s", strerror(-revents));
+            break;
+        }
+        if (revents & POLLIN) {
+            rv = nghttp2_session_recv(session);
+            if (rv < 0) {
+                if (rv == NGHTTP2_ERR_EOF) {
+                    log_message(LOG_LEVEL_INFO, "HTTP/2 session closed by client");
+                    break;
+                }
+                log_message(LOG_LEVEL_ERROR, "nghttp2_session_recv error: %s", nghttp2_strerror(rv));
                 break;
             }
-            log_message(LOG_LEVEL_ERROR, "HTTP/2 session recv error: %s", nghttp2_strerror(rv));
-            break;
         }
-
-        rv = nghttp2_session_send(session);
-        if (rv < 0)
-        {
-            log_message(LOG_LEVEL_ERROR, "HTTP/2 session send error: %s", nghttp2_strerror(rv));
-            break;
+        if (revents & POLLOUT) {
+            rv = nghttp2_session_send(session);
+            if (rv < 0) {
+                log_message(LOG_LEVEL_ERROR, "nghttp2_session_send error: %s", nghttp2_strerror(rv));
+                break;
+            }
         }
     }
-
-    if (SSL_get_shutdown(ssl) & SSL_RECEIVED_SHUTDOWN)
-    {
-        SSL_shutdown(ssl);
-    }
-
+    
     nghttp2_session_del(session);
     nghttp2_session_callbacks_del(callbacks);
 }
@@ -364,11 +373,25 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
 void client_task(void *arg)
 {
     ClientTaskData *data = (ClientTaskData *)arg;
-    handle_client(data->client_fd, data->config);
-    free(data); // Free the allocated memory after processing.
+    
+    // Thread-local io_uring instance (solely for client I/O).
+    static __thread struct io_uring *local_ring = NULL;
+    if (!local_ring) {
+        local_ring = malloc(sizeof(struct io_uring));
+        if (io_uring_queue_init(QUEUE_DEPTH, local_ring, 0) < 0) {
+            log_message(LOG_LEVEL_ERROR, "Failed to initialize thread-local io_uring");
+            free(local_ring);
+            local_ring = NULL;
+            // Optionally: terminate or fall back to blocking I/O.
+        }
+    }
+    
+    // Pass the thread-local ring to handle_client.
+    handle_client(data->client_fd, data->config, local_ring);
+    free(data);
 }
 
-void handle_client(int client_fd, ServerConfig *config)
+void handle_client(int client_fd, ServerConfig *config, struct io_uring *ring)
 {
     struct timeval timeout;
     timeout.tv_sec = 5;
@@ -384,7 +407,6 @@ void handle_client(int client_fd, ServerConfig *config)
     }
 
     SSL_set_fd(ssl, client_fd);
-
     SSL_set_app_data(ssl, config);
 
     if (SSL_accept(ssl) <= 0)
@@ -399,13 +421,10 @@ void handle_client(int client_fd, ServerConfig *config)
     unsigned int alpn_len = 0;
     SSL_get0_alpn_selected(ssl, &alpn_proto, &alpn_len);
 
-    if (alpn_len == 2 && memcmp(alpn_proto, "h2", 2) == 0)
-    {
+    if (alpn_len == 2 && memcmp(alpn_proto, "h2", 2) == 0) {
         log_message(LOG_LEVEL_INFO, "Negotiated HTTP/2");
-        handle_http2_connection(ssl, client_fd, config);
-    }
-    else
-    {
+        handle_http2_connection(ssl, client_fd, config, ring);
+    } else {
         log_message(LOG_LEVEL_INFO, "Negotiated HTTP/1.1");
         handle_http1_connection(ssl, client_fd, config);
     }
@@ -420,39 +439,37 @@ int start_server(ServerConfig *config)
     int server_fd, client_fd;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
-    struct io_uring ring;
 
-    // Create and initialize io_uring for accepting connections.
-    if (io_uring_queue_init(QUEUE_DEPTH, &ring, 0) != 0)
-    {
-        perror("io_uring_queue_init failed");
+    // Create and initialize a global io_uring instance for connection handling.
+    if (io_uring_queue_init(QUEUE_DEPTH * 2, &global_ring, 0) != 0) {
+        perror("global io_uring_queue_init failed");
         return 1;
     }
 
     // Create the server socket.
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == -1)
-    {
+    if (server_fd == -1) {
         perror("Socket creation error");
+        io_uring_queue_exit(&global_ring);
         return 1;
     }
 
-    // Bind the socket to the address and port.
+    // Bind the socket.
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(config->port);
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1)
-    {
+    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
         perror("Bind error");
         close(server_fd);
+        io_uring_queue_exit(&global_ring);
         return 1;
     }
 
-    // Start listening for incoming connections.
-    if (listen(server_fd, 2048) == -1)
-    {
+    // Start listening.
+    if (listen(server_fd, 2048) == -1) {
         perror("Listen error");
         close(server_fd);
+        io_uring_queue_exit(&global_ring);
         return 1;
     }
 
@@ -461,48 +478,41 @@ int start_server(ServerConfig *config)
 
     // Create the dynamic thread pool.
     ThreadPool *pool = thread_pool_create(32, config->max_connections);
-    if (!pool)
-    {
+    if (!pool) {
         fprintf(stderr, "Failed to create thread pool\n");
         close(server_fd);
+        io_uring_queue_exit(&global_ring);
         return 1;
     }
     printf("Emme listening on port %d...\n", config->port);
 
-    // Main loop using io_uring to accept new connections
-    while (1)
-    {
-        struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-        if (!sqe)
-        {
-            fprintf(stderr, "Failed to get submission queue entry\n");
+    // Main loop using io_uring to accept connections.
+    // (You may keep using the local ring for acceptance if desired.)
+    while (1) {
+        struct io_uring_sqe *sqe = io_uring_get_sqe(&global_ring);
+        if (!sqe) {
+            fprintf(stderr, "Failed to get SQE for accept\n");
             break;
         }
-
         io_uring_prep_accept(sqe, server_fd, (struct sockaddr *)&client_addr, &client_len, 0);
-        if (io_uring_submit(&ring) < 0)
-        {
-            perror("io_uring_submit failed");
+        if (io_uring_submit(&global_ring) < 0) {
+            perror("io_uring_submit (accept) failed");
             break;
         }
-
         struct io_uring_cqe *cqe;
-        if (io_uring_wait_cqe(&ring, &cqe) < 0)
-        {
-            perror("io_uring_wait_cqe failed");
+        if (io_uring_wait_cqe(&global_ring, &cqe) < 0) {
+            perror("io_uring_wait_cqe (accept) failed");
             break;
         }
         client_fd = cqe->res;
-        io_uring_cqe_seen(&ring, cqe);
+        io_uring_cqe_seen(&global_ring, cqe);
 
-        // Set client_fd to blocking mode (if needed)
+        // Set client_fd to blocking if necessary for SSL_accept.
         int flags = fcntl(client_fd, F_GETFL, 0);
         fcntl(client_fd, F_SETFL, flags & ~O_NONBLOCK);
 
-        // Allocate and prepare a ClientTaskData structure.
         ClientTaskData *task_data = malloc(sizeof(ClientTaskData));
-        if (!task_data)
-        {
+        if (!task_data) {
             perror("Failed to allocate memory for client task");
             close(client_fd);
             continue;
@@ -510,19 +520,16 @@ int start_server(ServerConfig *config)
         task_data->client_fd = client_fd;
         task_data->config = config;
 
-        // Add the client handling task to the thread pool.
-        if (!thread_pool_add_task(pool, client_task, task_data))
-        {
+        if (!thread_pool_add_task(pool, client_task, task_data)) {
             fprintf(stderr, "Failed to add task to thread pool\n");
             free(task_data);
             close(client_fd);
         }
     }
 
-    // Cleanup resources on server shutdown.
     thread_pool_destroy(pool);
     close(server_fd);
-    io_uring_queue_exit(&ring);
+    io_uring_queue_exit(&global_ring);
     cleanup_ssl_context(ssl_ctx);
     return 0;
 }

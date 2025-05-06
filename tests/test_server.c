@@ -13,6 +13,7 @@
 #include <config.h>
 #include <http_parser.h>
 #include <thread_pool.h>
+#include <liburing.h>
 
 typedef struct {
     int fd;
@@ -21,7 +22,15 @@ typedef struct {
 
 void *server_thread_func(void *arg) {
     ServerThreadArg *thread_arg = (ServerThreadArg *)arg;
-    handle_client(thread_arg->fd, thread_arg->config);
+    // Create a thread-local io_uring instance for testing.
+    struct io_uring local_ring;
+    if (io_uring_queue_init(QUEUE_DEPTH, &local_ring, 0) < 0) {
+        perror("io_uring_queue_init failed in test_server");
+        return NULL;
+    }
+    // Pass the local_ring to handle_client.
+    handle_client(thread_arg->fd, thread_arg->config, &local_ring);
+    io_uring_queue_exit(&local_ring);
     return NULL;
 }
 
