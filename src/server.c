@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <liburing.h>
 #include <sys/sendfile.h>
+#include <sys/time.h>  // for instrumentation
 #include "config.h"
 #include "server.h"
 #include "http_parser.h"
@@ -31,38 +32,25 @@ static int on_header_callback(nghttp2_session *session,
     (void)session;
     (void)flags;
     (void)user_data;
-
-    // Only for request headers.
     if (frame->hd.type == NGHTTP2_HEADERS &&
         frame->headers.cat == NGHTTP2_HCAT_REQUEST)
     {
-        // Get or allocate per-stream data.
         StreamData *data = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
         if (!data)
         {
             data = calloc(1, sizeof(StreamData));
             nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, data);
         }
-        // Process pseudo-headers.
         if (namelen >= 1 && name[0] == ':')
         {
             if (strncmp((const char *)name, ":method", namelen) == 0)
-            {
                 data->req.method = strndup((const char *)value, valuelen);
-            }
             else if (strncmp((const char *)name, ":path", namelen) == 0)
-            {
                 data->req.path = strndup((const char *)value, valuelen);
-            }
             else if (strncmp((const char *)name, ":scheme", namelen) == 0)
-            {
-                // ignore scheme
-            }
+                ; /* ignore scheme */
             else if (strncmp((const char *)name, ":authority", namelen) == 0)
-            {
-                // Optionally store authority (or into version field if desired)
                 data->req.version = strndup((const char *)value, valuelen);
-            }
         }
     }
     return 0;
@@ -75,13 +63,11 @@ static ssize_t http2_body_read_callback(
     (void)session;
     (void)stream_id;
     (void)user_data;
-    struct
-    {
+    struct {
         const char *data;
         size_t len;
         size_t sent;
     } *ctx = (void *)source->ptr;
-
     size_t remaining = ctx->len - ctx->sent;
     size_t to_copy = remaining < length ? remaining : length;
     if (to_copy > 0)
@@ -107,26 +93,16 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
         (frame->hd.flags & NGHTTP2_FLAG_END_HEADERS))
     {
         StreamData *data = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
-
         if (data)
         {
-            // Synthesize a raw request line for compatibility with your router
             char raw_request[BUFFER_SIZE];
             snprintf(raw_request, sizeof(raw_request), "%s %s %s\r\n",
                      data->req.method ? data->req.method : "GET",
                      data->req.path ? data->req.path : "/",
                      data->req.version ? data->req.version : "HTTP/2");
-
             log_message(LOG_LEVEL_INFO, "Routing HTTP/2 request for path (synthesized): %s", data->req.path);
-
-            // Prepare HTTP/2 response struct
             Http2Response h2resp = {0};
-
-            // Call your router to fill h2resp
-            // NOTE: Pass NULL for SSL, as it's not used for HTTP/2
             route_request_tls(&data->req, raw_request, strlen(raw_request), NULL, NULL, &h2resp);
-
-            // If router didn't set headers, set defaults
             if (h2resp.num_headers == 0)
             {
                 char status_str[4];
@@ -138,48 +114,33 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
                 h2resp.headers[2] = MAKE_NV("content-length", clen);
                 h2resp.num_headers = 3;
             }
-
-            // Always ensure body is not empty
             if (h2resp.body_len == 0)
             {
                 static const char dummy_body[] = "\n";
-                strncpy(h2resp.body, dummy_body, sizeof(h2resp.body) - 1);
-                h2resp.body[sizeof(h2resp.body) - 1] = '\0';
+                strncpy(h2resp.body, dummy_body, sizeof(h2resp.body)-1);
+                h2resp.body[sizeof(h2resp.body)-1] = '\0';
                 h2resp.body_len = strlen(h2resp.body);
             }
-
             if (h2resp.status_code == 0)
-            {
                 h2resp.status_code = 200;
-            }
-
-            // Data provider for nghttp2
             nghttp2_data_provider data_prd;
-            struct
-            {
+            struct {
                 const char *data;
                 size_t len;
                 size_t sent;
             } *body_ctx = malloc(sizeof(*body_ctx));
-
             body_ctx->data = h2resp.body;
             body_ctx->len = h2resp.body_len;
             body_ctx->sent = 0;
-
             data_prd.source.ptr = body_ctx;
             data_prd.read_callback = http2_body_read_callback;
-
             int rv = nghttp2_submit_response(session, frame->hd.stream_id,
                                              h2resp.headers, h2resp.num_headers,
                                              &data_prd);
             if (rv != 0)
-            {
                 log_message(LOG_LEVEL_ERROR, "nghttp2_submit_response failed: %s", nghttp2_strerror(rv));
-            }
             else
-            {
                 log_message(LOG_LEVEL_INFO, "nghttp2_submit_response succeeded for stream %d", frame->hd.stream_id);
-            }
         }
     }
     return 0;
@@ -200,15 +161,12 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
         free(data);
         nghttp2_session_set_stream_user_data(session, stream_id, NULL);
     }
-
     return 0;
 }
 
 SSL_CTX *ssl_ctx = NULL;
-// Global ring used only in the accept loop.
-static struct io_uring global_ring;
+static struct io_uring global_ring;  // Global io_uring instance for the accept loop.
 
-// Forward declarations.
 static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring);
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config);
 
@@ -254,15 +212,12 @@ static ssize_t recv_callback(nghttp2_session *session, uint8_t *buf, size_t leng
     return ret;
 }
 
-/* (Existing HTTP/2 header, body, frame, and stream callbacks remain unchanged) */
-
-/* Nonblocking TLS handshake using the thread-local ring.
-   This function repeatedly calls SSL_accept until it completes, driving progress by
-   polling the socket via io_uring.
-*/
+/* Nonblocking TLS handshake using thread-local io_uring with instrumentation */
 static int perform_nonblocking_ssl_accept(SSL *ssl, int client_fd, struct io_uring *ring)
 {
     int ret;
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
     while ((ret = SSL_accept(ssl)) <= 0)
     {
         int err = SSL_get_error(ssl, ret);
@@ -297,16 +252,18 @@ static int perform_nonblocking_ssl_accept(SSL *ssl, int client_fd, struct io_uri
             return -1;
         }
     }
+    gettimeofday(&end, NULL);
+    long handshake_ms = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
+    log_message(LOG_LEVEL_INFO, "Nonblocking SSL handshake completed in %ld ms", handshake_ms);
     return ret;
 }
 
-/* HTTP/2 connection handler using the provided thread-local io_uring */
+/* HTTP/2 connection handler using thread-local io_uring */
 static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring)
 {
     (void)config;
     int flags = fcntl(client_fd, F_GETFL, 0);
     fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-
     nghttp2_session_callbacks *callbacks;
     nghttp2_session *session;
     if (nghttp2_session_callbacks_new(&callbacks) != 0)
@@ -319,7 +276,6 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
     nghttp2_session_callbacks_set_on_header_callback(callbacks, on_header_callback);
     nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, on_frame_recv_callback);
     nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
-
     if (nghttp2_session_server_new(&session, callbacks, ssl) != 0)
     {
         log_message(LOG_LEVEL_ERROR, "Failed to create nghttp2 session");
@@ -327,8 +283,6 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
         return;
     }
     log_message(LOG_LEVEL_INFO, "HTTP/2 session started");
-
-    // Submit the initial SETTINGS frame.
     int rv = nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, NULL, 0);
     if (rv < 0)
     {
@@ -337,7 +291,6 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
         nghttp2_session_callbacks_del(callbacks);
         return;
     }
-
     rv = 0;
     while (nghttp2_session_want_read(session) || nghttp2_session_want_write(session))
     {
@@ -380,7 +333,6 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
                 }
                 else if (rv == NGHTTP2_ERR_WOULDBLOCK)
                 {
-                    // Not an error; simply wait for new events.
                     rv = 0;
                 }
                 else
@@ -396,9 +348,7 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
             if (rv < 0)
             {
                 if (rv == NGHTTP2_ERR_WOULDBLOCK)
-                {
                     rv = 0;
-                }
                 else
                 {
                     log_message(LOG_LEVEL_ERROR, "nghttp2_session_send error: %s", nghttp2_strerror(rv));
@@ -411,7 +361,7 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
     nghttp2_session_callbacks_del(callbacks);
 }
 
-/* HTTP/1.1 connection handler remains unchanged */
+/* HTTP/1.1 connection handler using legacy methods */
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config)
 {
     (void)client_fd;
@@ -443,7 +393,7 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
     route_request_tls(&req, buffer, total_read, config, ssl, NULL);
 }
 
-/* Worker task: Using thread-local io_uring for client I/O. */
+/* Worker task: uses thread-local io_uring for per-connection I/O */
 void client_task(void *arg)
 {
     ClientTaskData *data = (ClientTaskData *)arg;
@@ -456,14 +406,13 @@ void client_task(void *arg)
             log_message(LOG_LEVEL_ERROR, "Failed to initialize thread-local io_uring");
             free(local_ring);
             local_ring = NULL;
-            // Optionally exit this task.
         }
     }
     handle_client(data->client_fd, data->config, local_ring);
     free(data);
 }
 
-/* Main per-connection handler. Performs nonblocking TLS handshake before dispatching based on ALPN. */
+/* Main per-connection handler; performs nonblocking TLS handshake before dispatching via ALPN */
 void handle_client(int client_fd, ServerConfig *config, struct io_uring *ring)
 {
     struct timeval timeout;
@@ -471,7 +420,6 @@ void handle_client(int client_fd, ServerConfig *config, struct io_uring *ring)
     timeout.tv_usec = 0;
     setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
     SSL *ssl = SSL_new(ssl_ctx);
     if (!ssl)
     {
@@ -480,8 +428,6 @@ void handle_client(int client_fd, ServerConfig *config, struct io_uring *ring)
     }
     SSL_set_fd(ssl, client_fd);
     SSL_set_app_data(ssl, config);
-
-    // Perform nonblocking TLS handshake.
     if (perform_nonblocking_ssl_accept(ssl, client_fd, ring) <= 0)
     {
         log_message(LOG_LEVEL_ERROR, "Nonblocking SSL handshake failed");
@@ -489,7 +435,6 @@ void handle_client(int client_fd, ServerConfig *config, struct io_uring *ring)
         close(client_fd);
         return;
     }
-
     const unsigned char *alpn_proto = NULL;
     unsigned int alpn_len = 0;
     SSL_get0_alpn_selected(ssl, &alpn_proto, &alpn_len);
@@ -514,13 +459,11 @@ int start_server(ServerConfig *config)
     int server_fd, client_fd;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
-
     if (io_uring_queue_init(QUEUE_DEPTH * 2, &global_ring, 0) != 0)
     {
         perror("global io_uring_queue_init failed");
         return 1;
     }
-
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1)
     {
@@ -528,7 +471,6 @@ int start_server(ServerConfig *config)
         io_uring_queue_exit(&global_ring);
         return 1;
     }
-
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(config->port);
@@ -539,7 +481,6 @@ int start_server(ServerConfig *config)
         io_uring_queue_exit(&global_ring);
         return 1;
     }
-
     if (listen(server_fd, 2048) == -1)
     {
         perror("Listen error");
@@ -547,7 +488,6 @@ int start_server(ServerConfig *config)
         io_uring_queue_exit(&global_ring);
         return 1;
     }
-
     ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key);
     ThreadPool *pool = thread_pool_create(32, config->max_connections);
     if (!pool)
@@ -558,7 +498,6 @@ int start_server(ServerConfig *config)
         return 1;
     }
     printf("Emme listening on port %d...\n", config->port);
-
     while (1)
     {
         struct io_uring_sqe *sqe = io_uring_get_sqe(&global_ring);
@@ -581,11 +520,8 @@ int start_server(ServerConfig *config)
         }
         client_fd = cqe->res;
         io_uring_cqe_seen(&global_ring, cqe);
-
-        // Force blocking mode for SSL_accept (handshake is driven via our own loop).
         int flags = fcntl(client_fd, F_GETFL, 0);
         fcntl(client_fd, F_SETFL, flags & ~O_NONBLOCK);
-
         ClientTaskData *task_data = malloc(sizeof(ClientTaskData));
         if (!task_data)
         {
@@ -595,7 +531,6 @@ int start_server(ServerConfig *config)
         }
         task_data->client_fd = client_fd;
         task_data->config = config;
-
         if (!thread_pool_add_task(pool, client_task, task_data))
         {
             fprintf(stderr, "Failed to add task to thread pool\n");
