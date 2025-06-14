@@ -108,11 +108,18 @@ ssl:
 ## Build Instructions
 
 Ensure that you have the required dependencies installed:
+
 - `liburing`
 - `pthread`
 - `libYAML`
 - `libnghttp2-dev`
 - OpenSSL development libraries (e.g., `libssl-dev`)
+
+To install all necessary dependencies, try the following script:
+
+```sh
+./scripts/install_deps.sh
+```
 
 To compile the project, run:
 

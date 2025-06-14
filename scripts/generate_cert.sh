@@ -2,7 +2,7 @@
 # Script per generare un certificato self-signed valido per 365 giorni
 # Usa questo certificato SOLO per sviluppo e test.
 
-CERT_DIR="certs"
+CERT_DIR="../certs"
 CERT_FILE="${CERT_DIR}/dev.crt"
 KEY_FILE="${CERT_DIR}/dev.key"
 
