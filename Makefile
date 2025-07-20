@@ -1,9 +1,11 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -Iinclude -D_GNU_SOURCE
 LDFLAGS = -luring -lpthread -lssl -lcrypto -lyaml -lnghttp2
+CRITERION_FLAGS = $(shell pkg-config --cflags --libs criterion)
 
 SRC = $(wildcard src/*.c)
 OBJ = $(SRC:.c=.o)
+OBJ_NO_MAIN = $(filter-out src/main.o, $(OBJ))
 EXEC = emme
 
 # Target principale per compilare il server
@@ -15,22 +17,32 @@ $(EXEC): $(OBJ)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Target per compilare il test della configurazione
-test_config: tests/test_config.c src/config.c
-	$(CC) $(CFLAGS) -Iinclude -o test_config tests/test_config.c src/config.c src/log.c $(LDFLAGS)
+# Unit tests
+unit_tests := $(wildcard tests/unit/*.c)
+unit_binaries := $(unit_tests:.c=)
 
-# Target per compilare il test del server
-test_server: tests/test_server.c src/server.c
-	$(CC) $(CFLAGS) -Iinclude -o test_server tests/test_server.c src/tls.c src/http_parser.c src/router.c src/thread_pool.c src/server.c src/log.c $(LDFLAGS)
+$(unit_binaries): %: %.c $(OBJ_NO_MAIN)
+	$(CC) $(CFLAGS) -Iinclude -o $@ $< $(OBJ_NO_MAIN) $(CRITERION_FLAGS) $(LDFLAGS)
 
-test_http_parser: tests/test_http_parser.c
-	$(CC) $(CFLAGS) -Iinclude -o test_http_parser tests/test_http_parser.c src/router.c src/http_parser.c src/log.c $(LDFLAGS)
+# Integration tests
+integration_tests := $(wildcard tests/integration/*.c)
+integration_binaries := $(integration_tests:.c=)
 
-# Target test: compila ed esegue tutti i test
-test: test_config test_server test_http_parser
-	@echo \"Running test_config...\"\n./test_config
-	@echo \"Running test_server...\"\n./test_server
-	@echo \"Running test_http_parser...\"\n./test_http_parser
+$(integration_binaries): %: %.c $(OBJ_NO_MAIN)
+	$(CC) $(CFLAGS) -Iinclude -o $@ $< $(OBJ_NO_MAIN) $(CRITERION_FLAGS) $(LDFLAGS)
+
+# E2E tests
+e2e_tests := $(wildcard tests/e2e/*.c)
+e2e_binaries := $(e2e_tests:.c=)
+
+$(e2e_binaries): %: %.c $(OBJ_NO_MAIN)
+	$(CC) $(CFLAGS) -Iinclude -o $@ $< $(OBJ_NO_MAIN) $(CRITERION_FLAGS) $(LDFLAGS)
+
+# Run all tests
+test: $(unit_binaries) $(integration_binaries) $(e2e_binaries)
+	@for t in $(unit_binaries) $(integration_binaries) $(e2e_binaries); do \
+		echo "Running $$t..."; ./$$t; \
+	done
 
 clean:
-	rm -f $(OBJ) $(EXEC) test_config test_server test_http_parser *.log
+	rm -f $(OBJ) $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries) *.log

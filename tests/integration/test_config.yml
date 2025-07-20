@@ -1,0 +1,10 @@
+port: 8443
+max_connections: 5
+log_level: ERROR
+routes:
+  - path: /static/
+    technology: static
+    document_root: temp_static
+ssl:
+  certificate: certs/dev.crt
+  private_key:  certs/dev.key
