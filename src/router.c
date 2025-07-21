@@ -43,34 +43,49 @@ int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
             if (strncmp(req->path, config->routes[i].path, prefix_len) == 0)
             {
                 char filepath[512];
-                if ((size_t)snprintf(filepath, sizeof(filepath), "%s%s",
-                                     config->routes[i].document_root, req->path + prefix_len) >= sizeof(filepath))
+                const char *root = config->routes[i].document_root;
+                bool has_slash = (root[strlen(root) - 1] == '/');
+                int written = snprintf(filepath, sizeof(filepath),
+                       has_slash ? "%s%s" : "%s/%s",
+                       root,
+                       req->path + prefix_len);
+                if ((size_t)written >= sizeof(filepath))
                 {
                     fprintf(stderr, "serve_static_tls: Path too long\n");
                     return -1;
                 }
+
                 int fd = open(filepath, O_RDONLY);
                 if (fd < 0)
                 {
                     const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
                     SSL_write(ssl, not_found, strlen(not_found));
-                    return -1;
+                    return 0;
                 }
                 off_t filesize = lseek(fd, 0, SEEK_END);
                 lseek(fd, 0, SEEK_SET);
                 char header[256];
                 snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", filesize);
                 SSL_write(ssl, header, strlen(header));
-                // Here, we use sendfile() on the plain file descriptor.
-                // Since sendfile() writes directly from fd to socket,
-                // we need to flush the TLS record first.
+                
+                printf("Sending static file: %s\n", filepath);
                 char filebuf[BUFFER_SIZE];
                 ssize_t bytes;
                 while ((bytes = read(fd, filebuf, sizeof(filebuf))) > 0)
                 {
-                    SSL_write(ssl, filebuf, bytes);
+                    printf("Sending %zd bytes from file\n", bytes);
+                    int sent = 0;
+                    while (sent < bytes) {
+                        int n = SSL_write(ssl, filebuf + sent, bytes - sent);
+                        if (n <= 0) {
+                            close(fd);
+                            return -1;
+                        }
+                        sent += n;
+                    }
                 }
                 close(fd);
+
                 return 0;
             }
         }

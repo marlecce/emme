@@ -38,8 +38,19 @@ e2e_binaries := $(e2e_tests:.c=)
 $(e2e_binaries): %: %.c $(OBJ_NO_MAIN)
 	$(CC) $(CFLAGS) -Iinclude -o $@ $< $(OBJ_NO_MAIN) $(CRITERION_FLAGS) $(LDFLAGS)
 
+certs/dev.crt certs/dev.key:
+	mkdir -p certs
+	openssl req -newkey rsa:2048 -nodes \
+	  -keyout certs/dev.key \
+	  -x509 -days 365 \
+	  -out certs/dev.crt \
+	  -subj "/CN=localhost"
+
+# Ensure certs exist before building server or running tests
+emme: certs/dev.crt certs/dev.key
+
 # Run all tests
-test: $(unit_binaries) $(integration_binaries) $(e2e_binaries)
+test: certs/dev.crt certs/dev.key $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries)
 	@for t in $(unit_binaries) $(integration_binaries) $(e2e_binaries); do \
 		echo "Running $$t..."; ./$$t; \
 	done

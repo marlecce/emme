@@ -365,32 +365,50 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config)
 {
     (void)client_fd;
-    char buffer[BUFFER_SIZE];
-    int total_read = 0;
-    while (total_read < BUFFER_SIZE - 1)
-    {
-        int n = SSL_read(ssl, buffer + total_read, BUFFER_SIZE - 1 - total_read);
-        if (n <= 0)
-        {
-            int ssl_error = SSL_get_error(ssl, n);
-            log_message(LOG_LEVEL_ERROR, "SSL_read failed. Error: %d", ssl_error);
-            return;
+
+    // Serve multiple HTTP/1.x requests on the same TLS socket
+    for (;;) {
+        char buffer[BUFFER_SIZE];
+        int total_read = 0;
+
+        // 1) Read up to the end of headers (\r\n\r\n)
+        while (total_read < BUFFER_SIZE - 1) {
+            int n = SSL_read(ssl, buffer + total_read,
+                             BUFFER_SIZE - 1 - total_read);
+            if (n <= 0) {
+                // client closed connection or SSL error
+                goto shutdown_and_close;
+            }
+            total_read += n;
+            if (strstr(buffer, "\r\n\r\n"))
+                break;
         }
-        total_read += n;
-        if (strstr(buffer, "\r\n\r\n") != NULL)
-            break;
+        buffer[total_read] = '\0';
+
+        // 2) Parse the request
+        HttpRequest req;
+        if (parse_http_request(buffer, total_read, &req) != 0) {
+            const char *bad_response =
+                "HTTP/1.1 400 Bad Request\r\n"
+                "Content-Length: 0\r\n"
+                "\r\n";
+            SSL_write(ssl, bad_response, strlen(bad_response));
+            // malformed request → close connection
+            goto shutdown_and_close;
+        }
+
+        log_message(LOG_LEVEL_INFO, "Valid HTTP request received. Routing...");
+
+        // 3) Route & send response (static, proxy, etc.)
+        route_request_tls(&req, buffer, total_read, config, ssl, NULL);
+
+        // 4) Loop back to read the next request
+        //    (do NOT shutdown/close here)
     }
-    buffer[total_read] = '\0';
-    HttpRequest req;
-    if (parse_http_request(buffer, total_read, &req) != 0)
-    {
-        const char *bad_response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-        SSL_write(ssl, bad_response, strlen(bad_response));
-        log_message(LOG_LEVEL_WARN, "Invalid HTTP request received.");
-        return;
-    }
-    log_message(LOG_LEVEL_INFO, "Valid HTTP request received. Routing...");
-    route_request_tls(&req, buffer, total_read, config, ssl, NULL);
+
+shutdown_and_close:
+    SSL_shutdown(ssl);
+    close(client_fd);
 }
 
 /* Worker task: uses thread-local io_uring for per-connection I/O */

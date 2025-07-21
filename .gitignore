@@ -39,6 +39,7 @@ emme
 test_config
 test_server
 test_http_parser
+test_full_stack
 
 # Debug files
 *.dSYM/
