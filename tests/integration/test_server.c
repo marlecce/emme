@@ -25,7 +25,7 @@
 
 static pid_t server_pid = -1;
 
-// write a minimal YAML config pointing at temp_static and your certs/dev.*
+// write a minimal YAML config pointing at static and your certs/dev.*
 static void write_test_config(void)
 {
     mkdir(STATIC_DIR, 0755);
@@ -38,17 +38,35 @@ static void write_test_config(void)
     FILE *f = fopen(CONFIG_YAML, "w");
     cr_assert_not_null(f, "fopen config.yml");
     fprintf(f,
-            "port: %d\n"
-            "max_connections: 5\n"
-            "log_level: ERROR\n"
-            "routes:\n"
-            "  - path: /static/\n"
-            "    technology: static\n"
-            "    document_root: %s\n"
-            "ssl:\n"
-            "  certificate: certs/dev.crt\n"
-            "  private_key:  certs/dev.key\n",
-            PORT, STATIC_DIR);
+        "server:\n"
+        "  port: %d\n"
+        "  max_connections: 100\n"
+        "  log_level: ERROR\n"
+        "\n"
+        "logging:\n"
+        "  file: emme.log\n"
+        "  level: debug\n"
+        "  format: plain\n"
+        "  buffer_size: 16384\n"
+        "  rollover_size: 10485760\n"
+        "  rollover_daily: true\n"
+        "  appender_flags:\n"
+        "    - file\n"
+        "    - console\n"
+        "\n"
+        "ssl:\n"
+        "  certificate: \"certs/dev.crt\"\n"
+        "  private_key:  \"certs/dev.key\"\n"
+        "\n"
+        "routes:\n"
+        "  - path: \"/static/\"\n"
+        "    technology: \"static\"\n"
+        "    document_root: \"%s\"\n"
+        "  - path: \"/api/\"\n"
+        "    technology: \"reverse_proxy\"\n"
+        "    backend: \"127.0.0.1:8081\"\n",
+        PORT, STATIC_DIR
+    );
     fclose(f);
 }
 
@@ -147,9 +165,37 @@ Test(https_blackbox, get_static_and_404)
         "Host: localhost\r\n\r\n";
     cr_assert_gt(SSL_write(ssl, req1, strlen(req1)), 0, "write1");
     char buf[4096];
-    int n = SSL_read(ssl, buf, sizeof(buf) - 1);
-    cr_assert_gt(n, 0, "read1");
-    buf[n] = '\0';
+
+    size_t total = 0;
+    int content_length = -1;
+    int header_end = -1;
+
+    // Read until headers and body are complete
+    while (total < sizeof(buf) - 1) {
+        int n = SSL_read(ssl, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0) break;
+        total += n;
+        buf[total] = '\0';
+
+        // Find end of headers
+        if (header_end < 0) {
+            char *p = strstr(buf, "\r\n\r\n");
+            if (p) {
+                header_end = p - buf + 4;
+                // Find Content-Length
+                char *cl = strstr(buf, "Content-Length:");
+                if (cl) {
+                    sscanf(cl, "Content-Length: %d", &content_length);
+                }
+            }
+        }
+        // If headers found and body received, break
+        if (header_end > 0 && content_length >= 0 && total >= (size_t)(header_end + content_length))
+            break;
+    }
+
+    cr_assert_gt(total, 0, "read1");
+    buf[total] = '\0';
     cr_assert(strstr(buf, "HTTP/1.1 200 OK"),
               "Expected 200 OK, got:\n%s", buf);
     cr_assert(strstr(buf, "Hello, world!"),
@@ -160,9 +206,32 @@ Test(https_blackbox, get_static_and_404)
         "GET /static/notfound.html HTTP/1.1\r\n"
         "Host: localhost\r\n\r\n";
     cr_assert_gt(SSL_write(ssl, req2, strlen(req2)), 0, "write2");
-    n = SSL_read(ssl, buf, sizeof(buf) - 1);
-    cr_assert_gt(n, 0, "read2");
-    buf[n] = '\0';
+
+    memset(buf, 0, sizeof(buf));
+    int total2 = 0;
+    int header_end2 = -1;
+    while (total2 < (int)(sizeof(buf) - 1)) {
+       int n2 = SSL_read(ssl, buf + total2, sizeof(buf) - 1 - total2);
+       if (n2 <= 0) {
+            // If we already have some data, connection close is fine
+            if (total2 > 0) break;
+            // Otherwise, fail
+            cr_assert_gt(n2, 0, "read2");
+        }
+        total2 += n2;
+        buf[total2] = '\0';
+        if (header_end2 < 0) {
+            char *p2 = strstr(buf, "\r\n\r\n");
+            if (p2) {
+                header_end2 = p2 - buf + 4;
+                break; // 404 has no body, so we can stop here
+            }
+        }
+    }
+
+
+    cr_assert_gt(total2, 0, "read2");
+    buf[total2] = '\0';
     cr_assert(strstr(buf, "HTTP/1.1 404 Not Found"),
               "Expected 404 Not Found, got:\n%s", buf);
 
