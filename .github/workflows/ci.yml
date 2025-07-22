@@ -10,41 +10,18 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          # first axis: Ubuntu runner, no container
-          - os-name: ubuntu
-            runs-on: ubuntu-latest
-            container: "" 
-            install-deps: |
-              sudo apt-get update
-              sudo apt-get install -y build-essential liburing-dev libssl-dev libyaml-dev libnghttp2-dev libcriterion-dev
-          # second axis: Fedora container on Ubuntu runner
-          - os-name: fedora
-            runs-on: ubuntu-latest
-            container: fedora:latest
-            install-deps: |
-              sudo dnf -y update
-              sudo dnf -y install @development-tools \
-                liburing-devel openssl-devel libyaml-devel nghttp2-devel libcriterion-dev
-
-    name: Build & Test on ${{ matrix.os-name }}
-    runs-on: ${{ matrix.runs-on }}
-    # only inject container if non-empty
-    container: ${{ matrix.container }}
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install dependencies (${{ matrix.os-name }})
+      - name: Install dependencies
         run: |
-          # Fedora container already runs as root, so sudo is optional
-          ${{ matrix.install-deps }}
+          sudo apt-get update
+          sudo apt-get install -y build-essential liburing-dev libssl-dev libyaml-dev libnghttp2-dev libcriterion-dev
 
       - name: Compile project
         run: make
 
       - name: Run tests
         run: make test
-
