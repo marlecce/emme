@@ -19,7 +19,7 @@ jobs:
             container: "" 
             install-deps: |
               sudo apt-get update
-              sudo apt-get install -y build-essential liburing-dev libssl-dev libyaml-dev libnghttp2-dev criterion-dev
+              sudo apt-get install -y build-essential liburing-dev libssl-dev libyaml-dev libnghttp2-dev libcriterion-dev
           # second axis: Fedora container on Ubuntu runner
           - os-name: fedora
             runs-on: ubuntu-latest
@@ -27,7 +27,7 @@ jobs:
             install-deps: |
               sudo dnf -y update
               sudo dnf -y install @development-tools \
-                liburing-devel openssl-devel libyaml-devel nghttp2-devel criterion-devel
+                liburing-devel openssl-devel libyaml-devel nghttp2-devel libcriterion-dev
 
     name: Build & Test on ${{ matrix.os-name }}
     runs-on: ${{ matrix.runs-on }}
