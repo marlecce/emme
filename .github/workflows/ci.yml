@@ -52,12 +52,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install dependencies (Fedora)
+      - name: Install compilers & build tools (Fedora)
         run: |
           sudo dnf install -y \
             gcc gcc-c++ make automake autoconf libtool pkgconfig \
-            git meson ninja-build liburing-devel openssl-devel \
-            libyaml-devel libnghttp2-devel cmake criterion-devel
+            git meson ninja-build dnf-plugins-core libffi-devel cmake openssl
+
+      - name: Build and install Criterion from source
+        run: |
+          git clone --recursive https://github.com/Snaipe/Criterion.git /tmp/criterion
+          cd /tmp/criterion
+          meson setup build
+          ninja -C build
+          sudo ninja -C build install
+          # Update linker cache so libcriterion is found
+          echo '/usr/local/lib64' | sudo tee /etc/ld.so.conf.d/criterion.conf
+          sudo ldconfig
+
+      - name: Install other dependencies (Fedora)
+        run: |
+          sudo dnf install -y liburing-devel openssl-devel libyaml-devel libnghttp2-devel
 
       - name: Compile project
         run: make clean && make
