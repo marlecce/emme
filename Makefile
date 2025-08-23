@@ -32,9 +32,9 @@ coverage: coverage-clean
 # Text + HTML + XML (CI friendly)
 coverage-report:
 	@mkdir -p coverage
-	# Install gcovr if not present: pip install --user gcovr
 	gcovr -r . --exclude 'tests' --branches --txt > coverage/summary.txt
 	gcovr -r . --exclude 'tests' --branches --xml-pretty -o coverage/coverage.xml
+	gcovr -r . --exclude 'tests' --branches --html --html-title "emme coverage" -o coverage/coverage.html
 	gcovr -r . --exclude 'tests' --branches --html-details coverage/index.html --html-title "emme coverage"
 	@echo "Open coverage/index.html"
 
