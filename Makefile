@@ -87,5 +87,11 @@ tests/all_tests: $(unit_tests) $(integration_tests) $(e2e_tests) $(OBJ_NO_MAIN)
 test: certs/dev.crt certs/dev.key $(EXEC) tests/all_tests
 	./tests/all_tests
 
+#test: certs/dev.crt certs/dev.key $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries)
+#	@set -e; \
+#	for t in $(unit_binaries) $(integration_binaries) $(e2e_binaries); do \
+#		echo "Running $$t..."; ./$$t; \
+#	done
+
 clean: coverage-clean
 	rm -f $(OBJ) $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries) *.log

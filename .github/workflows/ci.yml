@@ -72,7 +72,7 @@ jobs:
           sudo dnf install -y liburing-devel openssl-devel libyaml-devel libnghttp2-devel
 
       - name: Compile project
-        run: make
+        run: make clean && make
 
       - name: Run tests
         run: make test
