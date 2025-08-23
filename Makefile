@@ -28,6 +28,7 @@ coverage: coverage-clean
 	$(MAKE) clean
 	$(MAKE) COVERAGE=1 all
 	$(MAKE) COVERAGE=1 test
+	$(MAKE) coverage-report
 
 # Text + HTML + XML (CI friendly)
 coverage-report:
@@ -80,10 +81,11 @@ certs/dev.crt certs/dev.key:
 emme: certs/dev.crt certs/dev.key
 
 # Run all tests
-test: certs/dev.crt certs/dev.key $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries)
-	@for t in $(unit_binaries) $(integration_binaries) $(e2e_binaries); do \
-		echo "Running $$t..."; ./$$t; \
-	done
+tests/all_tests: $(unit_tests) $(integration_tests) $(e2e_tests) $(OBJ_NO_MAIN)
+	$(CC) $(CFLAGS) -Iinclude -o $@ $^ $(CRITERION_FLAGS) $(LDFLAGS)
+
+test: certs/dev.crt certs/dev.key $(EXEC) tests/all_tests
+	./tests/all_tests
 
 clean: coverage-clean
 	rm -f $(OBJ) $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries) *.log
