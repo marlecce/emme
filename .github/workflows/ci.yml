@@ -44,8 +44,7 @@ jobs:
       #      --fail-under-line 70 --fail-under-branch 60
 
   fedora-build:
-    runs-on: ubuntu-latest
-    container: fedora:latest
+    runs-on: fedora-38
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3

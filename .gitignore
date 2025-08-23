@@ -67,3 +67,4 @@ dkms.conf
 *.gcda
 *.gcno
 coverage/
+tests/*_tests
