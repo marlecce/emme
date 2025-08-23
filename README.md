@@ -146,3 +146,10 @@ curl -vk https://localhost:8443
 ```bash
 h2load -n100 -c10 -m2 https://localhost:8443/
 ```
+
+## Pipeline tests
+
+```bash
+act -j fedora-build --container-architecture linux/amd64
+act -j ubuntu-build
+```

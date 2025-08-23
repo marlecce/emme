@@ -62,3 +62,8 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# coverage
+*.gcda
+*.gcno
+coverage/

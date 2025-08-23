@@ -8,6 +8,36 @@ OBJ = $(SRC:.c=.o)
 OBJ_NO_MAIN = $(filter-out src/main.o, $(OBJ))
 EXEC = emme
 
+# --- Coverage toggles ---
+COVERAGE ?= 0
+
+ifeq ($(COVERAGE),1)
+  CFLAGS   += -O0 -g -fprofile-arcs -ftest-coverage
+  LDFLAGS  += -fprofile-arcs -ftest-coverage
+endif
+
+# Ensure debug symbols even in regular builds (helps reports)
+CFLAGS += -g
+
+.PHONY: coverage coverage-clean coverage-report
+
+coverage-clean:
+	@rm -rf coverage *.gcda *.gcno **/*.gcda **/*.gcno
+
+coverage: coverage-clean
+	$(MAKE) clean
+	$(MAKE) COVERAGE=1 all
+	$(MAKE) COVERAGE=1 test
+
+# Text + HTML + XML (CI friendly)
+coverage-report:
+	@mkdir -p coverage
+	# Install gcovr if not present: pip install --user gcovr
+	gcovr -r . --exclude 'tests' --branches --txt > coverage/summary.txt
+	gcovr -r . --exclude 'tests' --branches --xml-pretty -o coverage/coverage.xml
+	gcovr -r . --exclude 'tests' --branches --html-details coverage/index.html --html-title "emme coverage"
+	@echo "Open coverage/index.html"
+
 # Target principale per compilare il server
 all: $(EXEC)
 
@@ -55,5 +85,5 @@ test: certs/dev.crt certs/dev.key $(EXEC) $(unit_binaries) $(integration_binarie
 		echo "Running $$t..."; ./$$t; \
 	done
 
-clean:
+clean: coverage-clean
 	rm -f $(OBJ) $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries) *.log
