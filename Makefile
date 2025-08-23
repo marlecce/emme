@@ -88,8 +88,7 @@ emme: certs/dev.crt certs/dev.key
 #	./tests/all_tests
 
 test: certs/dev.crt certs/dev.key $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries)
-	@set -e; \
-	for t in $(unit_binaries) $(integration_binaries) $(e2e_binaries); do \
+	@for t in $(unit_binaries) $(integration_binaries) $(e2e_binaries); do \
 		echo "Running $$t..."; ./$$t; \
 	done
 
