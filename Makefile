@@ -59,7 +59,7 @@ $(unit_binaries): %: %.c $(OBJ_NO_MAIN)
 integration_tests := $(wildcard tests/integration/*.c)
 integration_binaries := $(integration_tests:.c=)
 
-$(integration_binaries): %: %.c
+$(integration_binaries): %: %.c $(OBJ_NO_MAIN)
 	$(CC) $(CFLAGS) -Iinclude -o $@ $< $(OBJ_NO_MAIN) $(CRITERION_FLAGS) $(LDFLAGS)
 
 # E2E tests
