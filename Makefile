@@ -88,4 +88,4 @@ test: certs/dev.crt certs/dev.key $(EXEC) tests/all_tests
 	./tests/all_tests
 
 clean: coverage-clean
-	rm -f $(OBJ) $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries) *.log
+	rm -f $(OBJ) $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries) *.log tests/*_tests
