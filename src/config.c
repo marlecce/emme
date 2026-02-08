@@ -30,10 +30,10 @@ static int get_yaml_int(yaml_document_t *doc, yaml_node_t *node, int *result) {
         return 0;
     } else {
         if (node) {
-            log_message(LOG_LEVEL_ERROR, "Parsing error: expected scalar for integer but got type %d at line %d, column %d",
-                        node->type, node->start_mark.line, node->start_mark.column);
+            fprintf(stderr, "Parsing error: expected scalar for integer but got type %d at line %zu, column %zu\n",
+                    node->type, node->start_mark.line, node->start_mark.column);
         } else {
-            log_message(LOG_LEVEL_ERROR, "Parsing error: received NULL node when expecting a scalar for integer");
+            fprintf(stderr, "Parsing error: received NULL node when expecting a scalar for integer\n");
         }
         return -1;
     }
@@ -48,10 +48,10 @@ static int get_yaml_string(yaml_document_t *doc, yaml_node_t *node, char *buffer
         return 0;
     } else {
         if (node) {
-            log_message(LOG_LEVEL_ERROR, "Parsing error: expected scalar for string but got type %d at line %d, column %d",
-                        node->type, node->start_mark.line, node->start_mark.column);
+            fprintf(stderr, "Parsing error: expected scalar for string but got type %d at line %zu, column %zu\n",
+                    node->type, node->start_mark.line, node->start_mark.column);
         } else {
-            log_message(LOG_LEVEL_ERROR, "Parsing error: received NULL node when expecting a scalar for string");
+            fprintf(stderr, "Parsing error: received NULL node when expecting a scalar for string\n");
         }
         return -1;
     }
@@ -80,7 +80,7 @@ static void parse_appender_flags(yaml_document_t *doc, yaml_node_t *node, Loggin
 int load_config(ServerConfig *config, const char *file_path) {
     FILE *fh = fopen(file_path, "rb");
     if (!fh) {
-        log_message(LOG_LEVEL_ERROR, "Error opening configuration file: %s", file_path);
+        fprintf(stderr, "Error opening configuration file: %s\n", file_path);
         return -1;
     }
 
@@ -88,13 +88,13 @@ int load_config(ServerConfig *config, const char *file_path) {
     yaml_document_t document;
     if (!yaml_parser_initialize(&parser)) {
         fclose(fh);
-        log_message(LOG_LEVEL_ERROR, "Unable to initialize YAML parser");
+        fprintf(stderr, "Unable to initialize YAML parser\n");
         return -1;
     }
     yaml_parser_set_input_file(&parser, fh);
 
     if (!yaml_parser_load(&parser, &document)) {
-        log_message(LOG_LEVEL_ERROR, "Error parsing YAML configuration file");
+        fprintf(stderr, "Error parsing YAML configuration file\n");
         yaml_parser_delete(&parser);
         fclose(fh);
         return -1;
@@ -103,7 +103,7 @@ int load_config(ServerConfig *config, const char *file_path) {
 
     yaml_node_t *root = yaml_document_get_root_node(&document);
     if (!root || root->type != YAML_MAPPING_NODE) {
-        log_message(LOG_LEVEL_ERROR, "YAML document is not a mapping");
+        fprintf(stderr, "YAML document is not a mapping\n");
         yaml_document_delete(&document);
         yaml_parser_delete(&parser);
         return -1;

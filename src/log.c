@@ -23,6 +23,7 @@ static LogEntry *log_buffer = NULL;
 static atomic_size_t log_head;     // indice di scrittura
 static atomic_size_t log_tail;     // indice di lettura
 static size_t log_buffer_size = 0;
+static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Variabili di configurazione */
 static LoggingConfig current_config;
@@ -96,8 +97,8 @@ static void *logger_thread_func(void *arg) {
     (void)arg;
     clock_gettime(CLOCK_REALTIME, &last_rollover);
     while (atomic_load(&logger_running) || (atomic_load(&log_head) != atomic_load(&log_tail))) {
-        size_t tail = atomic_load(&log_tail);
-        size_t head = atomic_load(&log_head);
+        size_t tail = atomic_load_explicit(&log_tail, memory_order_relaxed);
+        size_t head = atomic_load_explicit(&log_head, memory_order_acquire);
         if (tail == head) {
             /* Buffer vuoto: attesa breve per evitare busy-wait */
             usleep(1000);
@@ -150,7 +151,10 @@ int log_init(const LoggingConfig *config) {
         return -1;
     }
 
-    if (!config || config->file[0] == '\0') return -1;
+    if (!config)
+        return -1;
+    if ((config->appender_flags & APPENDER_FILE) && config->file[0] == '\0')
+        return -1;
     current_config = *config;
    
     /* Alloca il buffer di log */
@@ -189,25 +193,31 @@ int log_init(const LoggingConfig *config) {
 
 /* Funzione per inviare messaggi di log */
 void log_message(LogLevel level, const char *format, ...) {
-    if (level < current_config.level) return;
-    
-    size_t head = atomic_load(&log_head);
-    size_t tail = atomic_load(&log_tail);
+    if (!log_buffer || !atomic_load(&logger_running))
+        return;
+    if (level < current_config.level)
+        return;
+
+    pthread_mutex_lock(&log_lock);
+    size_t head = atomic_load_explicit(&log_head, memory_order_relaxed);
+    size_t tail = atomic_load_explicit(&log_tail, memory_order_relaxed);
     /* Se il buffer è pieno, scarta il messaggio per non bloccare */
     if (head - tail >= log_buffer_size) {
+        pthread_mutex_unlock(&log_lock);
         return;
     }
-    
+
     LogEntry *entry = &log_buffer[head % log_buffer_size];
     entry->level = level;
     clock_gettime(CLOCK_REALTIME, &entry->timestamp);
-    
+
     va_list args;
     va_start(args, format);
     vsnprintf(entry->message, MAX_LOG_ENTRY_SIZE, format, args);
     va_end(args);
-    
-    atomic_fetch_add(&log_head, 1);
+
+    atomic_store_explicit(&log_head, head + 1, memory_order_release);
+    pthread_mutex_unlock(&log_lock);
 }
 
 /* Chiude il modulo di logging e libera le risorse */

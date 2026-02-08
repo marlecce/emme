@@ -85,7 +85,7 @@ tests/all_tests: $(unit_tests) $(integration_tests) $(e2e_tests) $(OBJ_NO_MAIN)
 	$(CC) $(CFLAGS) -Iinclude -o $@ $^ $(CRITERION_FLAGS) $(LDFLAGS)
 
 test: certs/dev.crt certs/dev.key $(EXEC) tests/all_tests
-	./tests/all_tests
+	CRITERION_JOBS=1 CRITERION_NO_NANOMSG=1 ./tests/all_tests
 
 clean: coverage-clean
 	rm -f $(OBJ) $(EXEC) $(unit_binaries) $(integration_binaries) $(e2e_binaries) *.log tests/*_tests

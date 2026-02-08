@@ -6,12 +6,14 @@
 
 #define MAKE_NV(NAME, VALUE) (nghttp2_nv){(uint8_t *)(NAME), (uint8_t *)(VALUE), strlen(NAME), strlen(VALUE), NGHTTP2_NV_FLAG_NONE}
 
-typedef struct {
+typedef struct Http2Response {
     nghttp2_nv headers[16];
     size_t num_headers;
     char body[BUFFER_SIZE];
     size_t body_len;
     int status_code;
+    char status_code_str[4];
+    char content_length_str[32];
     char status_text[32];
     char content_type[64];
 } Http2Response;

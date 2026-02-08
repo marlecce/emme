@@ -26,7 +26,7 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    log_message(LOG_LEVEL_INFO, "Starting server on port %d",
+    log_message(LOG_LEVEL_INFO, "Starting server on port %d (max_connections=%d)",
         config.port, config.max_connections);
 
     if (start_server(&config) != 0) {

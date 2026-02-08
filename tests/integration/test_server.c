@@ -15,6 +15,8 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#include "server.h"
+
 #define PORT 8443
 #define CONFIG_YAML "tests/integration/test_config.yml"
 #define STATIC_DIR "temp_static"
@@ -148,6 +150,35 @@ static SSL *connect_ssl(SSL_CTX *ctx)
     return ssl;
 }
 
+static int ssl_write_all(SSL *ssl, const char *buf, size_t len)
+{
+    size_t off = 0;
+    while (off < len)
+    {
+        int n = SSL_write(ssl, buf + off, len - off);
+        if (n <= 0)
+            return -1;
+        off += (size_t)n;
+    }
+    return 0;
+}
+
+static int read_headers_only(SSL *ssl, char *buf, size_t buflen)
+{
+    int total = 0;
+    while (total < (int)buflen - 1)
+    {
+        int n = SSL_read(ssl, buf + total, buflen - 1 - total);
+        if (n <= 0)
+            break;
+        total += n;
+        buf[total] = '\0';
+        if (strstr(buf, "\r\n\r\n"))
+            break;
+    }
+    return total;
+}
+
 // ----------------------------------------
 // Test case
 // ----------------------------------------
@@ -234,6 +265,50 @@ Test(https_blackbox, get_static_and_404)
     buf[total2] = '\0';
     cr_assert(strstr(buf, "HTTP/1.1 404 Not Found"),
               "Expected 404 Not Found, got:\n%s", buf);
+
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+}
+
+Test(https_blackbox, bad_request_400)
+{
+    launch_server();
+
+    SSL_CTX *ctx = make_client_ctx();
+    SSL *ssl = connect_ssl(ctx);
+
+    const char *req = "GET /static/index.html\r\n\r\n";
+    cr_assert_eq(ssl_write_all(ssl, req, strlen(req)), 0, "write");
+
+    char buf[4096];
+    int n = read_headers_only(ssl, buf, sizeof(buf));
+    cr_assert_gt(n, 0, "read");
+    cr_assert(strstr(buf, "HTTP/1.1 400 Bad Request"),
+              "Expected 400, got:\n%s", buf);
+
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+}
+
+Test(https_blackbox, headers_too_large_431)
+{
+    launch_server();
+
+    SSL_CTX *ctx = make_client_ctx();
+    SSL *ssl = connect_ssl(ctx);
+
+    char big[BUFFER_SIZE];
+    memset(big, 'A', sizeof(big));
+
+    cr_assert_eq(ssl_write_all(ssl, big, sizeof(big)), 0, "write");
+
+    char buf[4096];
+    int n = read_headers_only(ssl, buf, sizeof(buf));
+    cr_assert_gt(n, 0, "read");
+    cr_assert(strstr(buf, "HTTP/1.1 431 Request Header Fields Too Large"),
+              "Expected 431, got:\n%s", buf);
 
     SSL_shutdown(ssl);
     SSL_free(ssl);

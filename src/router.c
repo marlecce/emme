@@ -18,6 +18,8 @@
 #include <arpa/inet.h>
 #include <poll.h>
 #include <errno.h>
+#include <limits.h>
+#include <stdbool.h>
 #include "http2_response.h"
 #include "router.h"
 #include "server.h"
@@ -55,6 +57,14 @@ int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
                     return -1;
                 }
 
+                char root_real[PATH_MAX];
+                char file_real[PATH_MAX];
+                if (!realpath(root, root_real))
+                {
+                    fprintf(stderr, "serve_static_tls: Invalid document root\n");
+                    return -1;
+                }
+
                 int fd = open(filepath, O_RDONLY);
                 if (fd < 0)
                 {
@@ -62,6 +72,24 @@ int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
                     SSL_write(ssl, not_found, strlen(not_found));
                     return 0;
                 }
+
+                if (!realpath(filepath, file_real))
+                {
+                    close(fd);
+                    const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                    SSL_write(ssl, not_found, strlen(not_found));
+                    return 0;
+                }
+                size_t root_len = strlen(root_real);
+                if (strncmp(file_real, root_real, root_len) != 0 ||
+                    (file_real[root_len] != '\0' && file_real[root_len] != '/'))
+                {
+                    close(fd);
+                    const char *forbidden = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
+                    SSL_write(ssl, forbidden, strlen(forbidden));
+                    return 0;
+                }
+
                 off_t filesize = lseek(fd, 0, SEEK_END);
                 lseek(fd, 0, SEEK_SET);
                 char header[256];
@@ -226,14 +254,6 @@ int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerC
         strcpy(h2resp->status_text, "OK");
         strcpy(h2resp->content_type, "text/html");
         h2resp->num_headers = 0;
-        char status_str[4];
-        snprintf(status_str, sizeof(status_str), "%d", h2resp->status_code);
-        h2resp->headers[h2resp->num_headers++] = MAKE_NV(":status", status_str);
-        h2resp->headers[h2resp->num_headers++] = MAKE_NV("content-type", h2resp->content_type);
-        char clen[32];
-        snprintf(clen, sizeof(clen), "%zu", h2resp->body_len);
-        h2resp->headers[h2resp->num_headers++] = MAKE_NV("content-length", clen);
-        // Add more headers as needed
         return 0;
     }
 

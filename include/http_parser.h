@@ -5,6 +5,8 @@
 
 #define MAX_HEADERS 20
 
+typedef struct Http2Response Http2Response;
+
 typedef struct {
     const char *field;
     const char *value;
@@ -20,6 +22,8 @@ typedef struct {
 
 typedef struct {
     HttpRequest req;
+    Http2Response *resp;
+    size_t resp_sent;
 } StreamData;
 
 int parse_http_request(char *buffer, size_t len, HttpRequest *req);

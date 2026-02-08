@@ -10,6 +10,7 @@
 #include <liburing.h>
 #include <sys/sendfile.h>
 #include <sys/time.h>  // for instrumentation
+#include <signal.h>
 #include "config.h"
 #include "server.h"
 #include "http_parser.h"
@@ -21,6 +22,29 @@
 #include "log.h"
 #include <ctype.h>
 #include "http2_response.h"
+
+#ifndef DEBUG_H2
+#define DEBUG_H2 0
+#endif
+
+#define H2_LOG(...)                         \
+    do {                                    \
+        if (DEBUG_H2)                       \
+            log_message(LOG_LEVEL_DEBUG, __VA_ARGS__); \
+    } while (0)
+
+static int find_header_end(const char *buf, size_t len)
+{
+    if (len < 4)
+        return -1;
+    for (size_t i = 0; i + 3 < len; i++)
+    {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' &&
+            buf[i + 2] == '\r' && buf[i + 3] == '\n')
+            return (int)(i + 4);
+    }
+    return -1;
+}
 
 /* Callback invoked for each header received in an HTTP/2 frame */
 static int on_header_callback(nghttp2_session *session,
@@ -63,22 +87,22 @@ static ssize_t http2_body_read_callback(
     (void)session;
     (void)stream_id;
     (void)user_data;
-    struct {
-        const char *data;
-        size_t len;
-        size_t sent;
-    } *ctx = (void *)source->ptr;
-    size_t remaining = ctx->len - ctx->sent;
+    StreamData *data = (StreamData *)source->ptr;
+    if (!data || !data->resp)
+    {
+        *data_flags = NGHTTP2_DATA_FLAG_EOF;
+        return 0;
+    }
+    size_t remaining = data->resp->body_len - data->resp_sent;
     size_t to_copy = remaining < length ? remaining : length;
     if (to_copy > 0)
     {
-        memcpy(buf, ctx->data + ctx->sent, to_copy);
-        ctx->sent += to_copy;
+        memcpy(buf, data->resp->body + data->resp_sent, to_copy);
+        data->resp_sent += to_copy;
     }
-    if (ctx->sent >= ctx->len)
+    if (data->resp_sent >= data->resp->body_len)
     {
         *data_flags = NGHTTP2_DATA_FLAG_EOF;
-        free(ctx);
     }
     return to_copy;
 }
@@ -87,7 +111,7 @@ static ssize_t http2_body_read_callback(
 static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data)
 {
     (void)user_data;
-    log_message(LOG_LEVEL_DEBUG, "on_frame_recv_callback: start");
+    H2_LOG("on_frame_recv_callback: start");
     if (frame->hd.type == NGHTTP2_HEADERS &&
         frame->headers.cat == NGHTTP2_HCAT_REQUEST &&
         (frame->hd.flags & NGHTTP2_FLAG_END_HEADERS))
@@ -101,46 +125,49 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
                      data->req.path ? data->req.path : "/",
                      data->req.version ? data->req.version : "HTTP/2");
             log_message(LOG_LEVEL_INFO, "Routing HTTP/2 request for path (synthesized): %s", data->req.path);
-            Http2Response h2resp = {0};
-            route_request_tls(&data->req, raw_request, strlen(raw_request), NULL, NULL, &h2resp);
-            if (h2resp.num_headers == 0)
+            if (!data->resp)
+                data->resp = calloc(1, sizeof(Http2Response));
+            if (!data->resp)
             {
-                char status_str[4];
-                snprintf(status_str, sizeof(status_str), "%d", h2resp.status_code ? h2resp.status_code : 200);
-                h2resp.headers[0] = MAKE_NV(":status", status_str);
-                h2resp.headers[1] = MAKE_NV("content-type", h2resp.content_type[0] ? h2resp.content_type : "text/plain");
-                char clen[32];
-                snprintf(clen, sizeof(clen), "%zu", h2resp.body_len);
-                h2resp.headers[2] = MAKE_NV("content-length", clen);
-                h2resp.num_headers = 3;
+                log_message(LOG_LEVEL_ERROR, "Failed to allocate Http2Response");
+                return 0;
             }
-            if (h2resp.body_len == 0)
+            data->resp_sent = 0;
+            route_request_tls(&data->req, raw_request, strlen(raw_request), NULL, NULL, data->resp);
+            if (data->resp->status_code == 0)
+                data->resp->status_code = 200;
+            snprintf(data->resp->status_code_str, sizeof(data->resp->status_code_str),
+                     "%d", data->resp->status_code);
+            snprintf(data->resp->content_length_str, sizeof(data->resp->content_length_str),
+                     "%zu", data->resp->body_len);
+            data->resp->headers[0] = MAKE_NV(":status", data->resp->status_code_str);
+            data->resp->headers[1] = MAKE_NV("content-type",
+                                             data->resp->content_type[0] ? data->resp->content_type : "text/plain");
+            data->resp->headers[2] = MAKE_NV("content-length", data->resp->content_length_str);
+            data->resp->num_headers = 3;
+            if (data->resp->body_len == 0)
             {
                 static const char dummy_body[] = "\n";
-                strncpy(h2resp.body, dummy_body, sizeof(h2resp.body)-1);
-                h2resp.body[sizeof(h2resp.body)-1] = '\0';
-                h2resp.body_len = strlen(h2resp.body);
+                strncpy(data->resp->body, dummy_body, sizeof(data->resp->body)-1);
+                data->resp->body[sizeof(data->resp->body)-1] = '\0';
+                data->resp->body_len = strlen(data->resp->body);
             }
-            if (h2resp.status_code == 0)
-                h2resp.status_code = 200;
             nghttp2_data_provider data_prd;
-            struct {
-                const char *data;
-                size_t len;
-                size_t sent;
-            } *body_ctx = malloc(sizeof(*body_ctx));
-            body_ctx->data = h2resp.body;
-            body_ctx->len = h2resp.body_len;
-            body_ctx->sent = 0;
-            data_prd.source.ptr = body_ctx;
+            data_prd.source.ptr = data;
             data_prd.read_callback = http2_body_read_callback;
             int rv = nghttp2_submit_response(session, frame->hd.stream_id,
-                                             h2resp.headers, h2resp.num_headers,
+                                             data->resp->headers, data->resp->num_headers,
                                              &data_prd);
             if (rv != 0)
                 log_message(LOG_LEVEL_ERROR, "nghttp2_submit_response failed: %s", nghttp2_strerror(rv));
             else
                 log_message(LOG_LEVEL_INFO, "nghttp2_submit_response succeeded for stream %d", frame->hd.stream_id);
+            if (rv == 0)
+            {
+                int send_rv = nghttp2_session_send(session);
+                if (send_rv < 0 && send_rv != NGHTTP2_ERR_WOULDBLOCK)
+                    log_message(LOG_LEVEL_ERROR, "nghttp2_session_send failed: %s", nghttp2_strerror(send_rv));
+            }
         }
     }
     return 0;
@@ -158,6 +185,7 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
         free((void *)data->req.method);
         free((void *)data->req.path);
         free((void *)data->req.version);
+        free(data->resp);
         free(data);
         nghttp2_session_set_stream_user_data(session, stream_id, NULL);
     }
@@ -166,9 +194,40 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
 
 SSL_CTX *ssl_ctx = NULL;
 static struct io_uring global_ring;  // Global io_uring instance for the accept loop.
+static volatile sig_atomic_t g_shutdown = 0;
+static int g_server_fd = -1;
+
+static void handle_signal(int sig)
+{
+    (void)sig;
+    g_shutdown = 1;
+    if (g_server_fd >= 0)
+        close(g_server_fd);
+}
 
 static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring);
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config);
+
+typedef struct {
+    SSL *ssl;
+    int want_read;
+    int want_write;
+    size_t total_read;
+    int logged_preface;
+} H2IO;
+
+static void log_hex_prefix(const uint8_t *data, size_t len)
+{
+    char hexbuf[256];
+    size_t max = len > 32 ? 32 : len;
+    size_t off = 0;
+    for (size_t i = 0; i < max && off + 3 < sizeof(hexbuf); i++)
+    {
+        off += snprintf(hexbuf + off, sizeof(hexbuf) - off, "%02x ", data[i]);
+    }
+    hexbuf[off] = '\0';
+    H2_LOG("h2 recv prefix (%zu bytes): %s", max, hexbuf);
+}
 
 /* Callback for nghttp2 to send data via SSL */
 static ssize_t send_callback(nghttp2_session *session, const uint8_t *data,
@@ -176,39 +235,72 @@ static ssize_t send_callback(nghttp2_session *session, const uint8_t *data,
 {
     (void)session;
     (void)flags;
-    SSL *ssl = (SSL *)user_data;
-    ssize_t ret = SSL_write(ssl, data, length);
-    if (ret <= 0)
+    H2IO *io = (H2IO *)user_data;
+    io->want_read = 0;
+    io->want_write = 0;
+
+    ssize_t ret = SSL_write(io->ssl, data, length);
+    if (ret > 0)
     {
-        int ssl_error = SSL_get_error(ssl, ret);
-        log_message(LOG_LEVEL_ERROR, "SSL_write failed in send_callback. Error: %d", ssl_error);
+        H2_LOG("h2 send_callback wrote=%zd", ret);
+        return ret;
     }
-    return ret;
+
+    int ssl_error = SSL_get_error(io->ssl, ret);
+    if (ssl_error == SSL_ERROR_WANT_READ) {
+        io->want_read = 1;
+        H2_LOG("h2 send_callback WANT_READ");
+        return NGHTTP2_ERR_WOULDBLOCK;
+    }
+    if (ssl_error == SSL_ERROR_WANT_WRITE) {
+        io->want_write = 1;
+        H2_LOG("h2 send_callback WANT_WRITE");
+        return NGHTTP2_ERR_WOULDBLOCK;
+    }
+    log_message(LOG_LEVEL_ERROR, "SSL_write failed in send_callback. Error: %d", ssl_error);
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
 }
 
 /* Callback for nghttp2 to receive data via SSL */
 static ssize_t recv_callback(nghttp2_session *session, uint8_t *buf, size_t length,
                              int flags, void *user_data)
 {
-    log_message(LOG_LEVEL_DEBUG, "recv_callback: start");
+    H2_LOG("recv_callback: start");
     (void)session;
     (void)flags;
-    SSL *ssl = (SSL *)user_data;
-    ssize_t ret = SSL_read(ssl, buf, length);
+    H2IO *io = (H2IO *)user_data;
+    io->want_read = 0;
+    io->want_write = 0;
+
+    ssize_t ret = SSL_read(io->ssl, buf, length);
     if (ret <= 0)
     {
-        int ssl_error = SSL_get_error(ssl, ret);
+        int ssl_error = SSL_get_error(io->ssl, ret);
         if (ssl_error == SSL_ERROR_ZERO_RETURN)
         {
             log_message(LOG_LEVEL_INFO, "SSL connection closed by peer");
             return NGHTTP2_ERR_EOF;
         }
-        if (ssl_error == SSL_ERROR_WANT_READ || ssl_error == SSL_ERROR_WANT_WRITE)
+        if (ssl_error == SSL_ERROR_WANT_READ) {
+            io->want_read = 1;
+            H2_LOG("h2 recv_callback WANT_READ");
             return NGHTTP2_ERR_WOULDBLOCK;
+        }
+        if (ssl_error == SSL_ERROR_WANT_WRITE) {
+            io->want_write = 1;
+            H2_LOG("h2 recv_callback WANT_WRITE");
+            return NGHTTP2_ERR_WOULDBLOCK;
+        }
         log_message(LOG_LEVEL_ERROR, "SSL_read failed in recv_callback. Error: %d", ssl_error);
         return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
-    log_message(LOG_LEVEL_DEBUG, "recv_callback: end, bytes read: %zd", ret);
+    io->total_read += (size_t)ret;
+    if (!io->logged_preface)
+    {
+        log_hex_prefix(buf, (size_t)ret);
+        io->logged_preface = 1;
+    }
+    H2_LOG("recv_callback: end, bytes read: %zd", ret);
     return ret;
 }
 
@@ -262,6 +354,7 @@ static int perform_nonblocking_ssl_accept(SSL *ssl, int client_fd, struct io_uri
 static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring)
 {
     (void)config;
+    (void)ring;
     int flags = fcntl(client_fd, F_GETFL, 0);
     fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
     nghttp2_session_callbacks *callbacks;
@@ -276,7 +369,8 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
     nghttp2_session_callbacks_set_on_header_callback(callbacks, on_header_callback);
     nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, on_frame_recv_callback);
     nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
-    if (nghttp2_session_server_new(&session, callbacks, ssl) != 0)
+    H2IO io = {.ssl = ssl, .want_read = 0, .want_write = 0, .total_read = 0, .logged_preface = 0};
+    if (nghttp2_session_server_new(&session, callbacks, &io) != 0)
     {
         log_message(LOG_LEVEL_ERROR, "Failed to create nghttp2 session");
         nghttp2_session_callbacks_del(callbacks);
@@ -291,69 +385,83 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
         nghttp2_session_callbacks_del(callbacks);
         return;
     }
+    rv = nghttp2_session_send(session);
+    if (rv < 0 && rv != NGHTTP2_ERR_WOULDBLOCK)
+    {
+        log_message(LOG_LEVEL_ERROR, "Failed to flush initial SETTINGS: %s", nghttp2_strerror(rv));
+        nghttp2_session_del(session);
+        nghttp2_session_callbacks_del(callbacks);
+        return;
+    }
     rv = 0;
     while (nghttp2_session_want_read(session) || nghttp2_session_want_write(session))
     {
-        struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-        if (!sqe)
+        short events = 0;
+        if (io.want_read || io.want_write)
         {
-            log_message(LOG_LEVEL_ERROR, "Failed to get io_uring SQE");
+            if (io.want_read)
+                events |= POLLIN;
+            if (io.want_write)
+                events |= POLLOUT;
+        }
+        else
+        {
+            if (nghttp2_session_want_read(session))
+                events |= POLLIN;
+            if (nghttp2_session_want_write(session))
+                events |= POLLOUT;
+        }
+
+        H2_LOG("h2 loop: want_read=%d want_write=%d io.want_read=%d io.want_write=%d events=0x%x",
+               nghttp2_session_want_read(session), nghttp2_session_want_write(session),
+               io.want_read, io.want_write, events);
+        struct pollfd pfd = {.fd = client_fd, .events = events};
+        int pret = poll(&pfd, 1, 1000);
+        if (pret < 0)
+        {
+            log_message(LOG_LEVEL_ERROR, "poll failed: %s", strerror(errno));
             break;
         }
-        io_uring_prep_poll_add(sqe, client_fd, POLLIN | POLLOUT);
-        int ret = io_uring_submit(ring);
-        if (ret < 0)
+        if (pret == 0)
+            continue;
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
         {
-            log_message(LOG_LEVEL_ERROR, "io_uring_submit failed: %s", strerror(-ret));
+            log_message(LOG_LEVEL_ERROR, "poll error/hangup: revents=%d", pfd.revents);
             break;
         }
-        struct io_uring_cqe *cqe;
-        ret = io_uring_wait_cqe(ring, &cqe);
-        if (ret < 0)
-        {
-            log_message(LOG_LEVEL_ERROR, "io_uring_wait_cqe failed: %s", strerror(-ret));
-            break;
-        }
-        int revents = cqe->res;
-        io_uring_cqe_seen(ring, cqe);
-        if (revents < 0)
-        {
-            log_message(LOG_LEVEL_ERROR, "Poll failed: %s", strerror(-revents));
-            break;
-        }
-        if (revents & POLLIN)
+        H2_LOG("h2 loop: revents=0x%x", pfd.revents);
+
+        if (pfd.revents & POLLIN)
         {
             rv = nghttp2_session_recv(session);
             if (rv < 0)
             {
                 if (rv == NGHTTP2_ERR_EOF)
-                {
                     log_message(LOG_LEVEL_INFO, "HTTP/2 session closed by client");
-                    break;
-                }
-                else if (rv == NGHTTP2_ERR_WOULDBLOCK)
-                {
-                    rv = 0;
-                }
-                else
-                {
+                else if (rv != NGHTTP2_ERR_WOULDBLOCK)
                     log_message(LOG_LEVEL_ERROR, "nghttp2_session_recv error: %s", nghttp2_strerror(rv));
+                if (rv != NGHTTP2_ERR_WOULDBLOCK)
                     break;
-                }
+            }
+            else
+            {
+                H2_LOG("h2 recv processed rv=%d total_read=%zu", rv, io.total_read);
             }
         }
-        if (revents & POLLOUT)
+        if (pfd.revents & POLLOUT)
         {
             rv = nghttp2_session_send(session);
             if (rv < 0)
             {
-                if (rv == NGHTTP2_ERR_WOULDBLOCK)
-                    rv = 0;
-                else
+                if (rv != NGHTTP2_ERR_WOULDBLOCK)
                 {
                     log_message(LOG_LEVEL_ERROR, "nghttp2_session_send error: %s", nghttp2_strerror(rv));
                     break;
                 }
+            }
+            else
+            {
+                H2_LOG("h2 send processed rv=%d", rv);
             }
         }
     }
@@ -372,6 +480,7 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
         int total_read = 0;
 
         // 1) Read up to the end of headers (\r\n\r\n)
+        int header_end = -1;
         while (total_read < BUFFER_SIZE - 1) {
             int n = SSL_read(ssl, buffer + total_read,
                              BUFFER_SIZE - 1 - total_read);
@@ -380,10 +489,19 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
                 goto shutdown_and_close;
             }
             total_read += n;
-            if (strstr(buffer, "\r\n\r\n"))
+            header_end = find_header_end(buffer, (size_t)total_read);
+            if (header_end >= 0)
                 break;
         }
         buffer[total_read] = '\0';
+        if (header_end < 0) {
+            const char *too_large =
+                "HTTP/1.1 431 Request Header Fields Too Large\r\n"
+                "Content-Length: 0\r\n"
+                "\r\n";
+            SSL_write(ssl, too_large, strlen(too_large));
+            goto shutdown_and_close;
+        }
 
         // 2) Parse the request
         HttpRequest req;
@@ -489,6 +607,9 @@ int start_server(ServerConfig *config)
         io_uring_queue_exit(&global_ring);
         return 1;
     }
+    g_server_fd = server_fd;
+    signal(SIGTERM, handle_signal);
+    signal(SIGINT, handle_signal);
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(config->port);
@@ -516,7 +637,7 @@ int start_server(ServerConfig *config)
         return 1;
     }
     printf("Emme listening on port %d...\n", config->port);
-    while (1)
+    while (!g_shutdown)
     {
         struct io_uring_sqe *sqe = io_uring_get_sqe(&global_ring);
         if (!sqe)
@@ -538,6 +659,18 @@ int start_server(ServerConfig *config)
         }
         client_fd = cqe->res;
         io_uring_cqe_seen(&global_ring, cqe);
+        if (g_shutdown)
+        {
+            if (client_fd >= 0)
+                close(client_fd);
+            break;
+        }
+        if (client_fd < 0)
+        {
+            if (g_shutdown)
+                break;
+            continue;
+        }
         int flags = fcntl(client_fd, F_GETFL, 0);
         fcntl(client_fd, F_SETFL, flags & ~O_NONBLOCK);
         ClientTaskData *task_data = malloc(sizeof(ClientTaskData));
