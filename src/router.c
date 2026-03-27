@@ -24,17 +24,96 @@
 #include "router.h"
 #include "server.h"
 
-/* serve_static_tls()
- *
- * If the HTTP request's path starts with a static route, constructs the full file path,
- * opens the file, and sends it to the client using SSL_write() and sendfile() for zero-copy.
- * If the file is not found, a 404 response is sent.
- */
-int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
+typedef enum {
+    STATIC_LOOKUP_ERROR = -1,
+    STATIC_LOOKUP_NO_ROUTE = 0,
+    STATIC_LOOKUP_READY = 1,
+    STATIC_LOOKUP_NOT_FOUND = 2,
+    STATIC_LOOKUP_FORBIDDEN = 3,
+} StaticLookupResult;
+
+static int ssl_write_all(SSL *ssl, const char *buf, size_t len)
 {
-    if (!req || !req->path)
+    size_t total = 0;
+
+    while (total < len)
+    {
+        int written = SSL_write(ssl, buf + total, (int)(len - total));
+        if (written <= 0)
+            return -1;
+        total += (size_t)written;
+    }
+
+    return 0;
+}
+
+static int send_simple_response(SSL *ssl, const char *status_line,
+                                const char *content_type, const char *body)
+{
+    size_t body_len = body ? strlen(body) : 0;
+    char header[256];
+    int header_len = snprintf(header, sizeof(header),
+                              "%s\r\n%sContent-Length: %zu\r\n\r\n",
+                              status_line,
+                              content_type ? content_type : "",
+                              body_len);
+    if (header_len < 0 || (size_t)header_len >= sizeof(header))
+        return -1;
+    if (ssl_write_all(ssl, header, (size_t)header_len) != 0)
+        return -1;
+    if (body_len > 0 && ssl_write_all(ssl, body, body_len) != 0)
+        return -1;
+    return 0;
+}
+
+static int populate_http2_response(Http2Response *resp, const char *body,
+                                   int status_code, const char *status_text,
+                                   const char *content_type)
+{
+    int body_len;
+
+    if (!resp || !body || !status_text || !content_type)
         return -1;
 
+    body_len = snprintf(resp->body, sizeof(resp->body), "%s", body);
+    if (body_len < 0 || (size_t)body_len >= sizeof(resp->body))
+        return -1;
+
+    resp->body_len = (size_t)body_len;
+    resp->status_code = status_code;
+    snprintf(resp->status_text, sizeof(resp->status_text), "%s", status_text);
+    snprintf(resp->content_type, sizeof(resp->content_type), "%s", content_type);
+    resp->num_headers = 0;
+    return 0;
+}
+
+static const char *guess_content_type(const char *path)
+{
+    const char *ext = strrchr(path, '.');
+
+    if (!ext)
+        return "application/octet-stream";
+    if (strcmp(ext, ".html") == 0 || strcmp(ext, ".htm") == 0)
+        return "text/html";
+    if (strcmp(ext, ".css") == 0)
+        return "text/css";
+    if (strcmp(ext, ".js") == 0)
+        return "application/javascript";
+    if (strcmp(ext, ".json") == 0)
+        return "application/json";
+    if (strcmp(ext, ".txt") == 0)
+        return "text/plain";
+    if (strcmp(ext, ".png") == 0)
+        return "image/png";
+    if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0)
+        return "image/jpeg";
+    return "application/octet-stream";
+}
+
+static StaticLookupResult lookup_static_file(const HttpRequest *req, ServerConfig *config,
+                                             int *fd_out, off_t *filesize_out,
+                                             const char **content_type_out)
+{
     for (int i = 0; i < config->route_count; i++)
     {
         if (strcmp(config->routes[i].technology, "static") == 0)
@@ -45,80 +124,182 @@ int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
             if (strncmp(req->path, config->routes[i].path, prefix_len) == 0)
             {
                 char filepath[512];
-                const char *root = config->routes[i].document_root;
-                bool has_slash = (root[strlen(root) - 1] == '/');
-                int written = snprintf(filepath, sizeof(filepath),
-                       has_slash ? "%s%s" : "%s/%s",
-                       root,
-                       req->path + prefix_len);
-                if ((size_t)written >= sizeof(filepath))
-                {
-                    fprintf(stderr, "serve_static_tls: Path too long\n");
-                    return -1;
-                }
-
                 char root_real[PATH_MAX];
                 char file_real[PATH_MAX];
-                if (!realpath(root, root_real))
-                {
-                    fprintf(stderr, "serve_static_tls: Invalid document root\n");
-                    return -1;
-                }
+                const char *root = config->routes[i].document_root;
+                size_t root_len = strlen(root);
+                bool has_slash;
+                int fd;
+                int written;
 
-                int fd = open(filepath, O_RDONLY);
+                if (root_len == 0)
+                    return STATIC_LOOKUP_ERROR;
+
+                has_slash = (root[root_len - 1] == '/');
+                written = snprintf(filepath, sizeof(filepath),
+                                   has_slash ? "%s%s" : "%s/%s",
+                                   root,
+                                   req->path + prefix_len);
+                if (written < 0 || (size_t)written >= sizeof(filepath))
+                    return STATIC_LOOKUP_ERROR;
+
+                if (!realpath(root, root_real))
+                    return STATIC_LOOKUP_ERROR;
+
+                fd = open(filepath, O_RDONLY);
                 if (fd < 0)
-                {
-                    const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-                    SSL_write(ssl, not_found, strlen(not_found));
-                    return 0;
-                }
+                    return STATIC_LOOKUP_NOT_FOUND;
 
                 if (!realpath(filepath, file_real))
                 {
                     close(fd);
-                    const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-                    SSL_write(ssl, not_found, strlen(not_found));
-                    return 0;
+                    return STATIC_LOOKUP_NOT_FOUND;
                 }
-                size_t root_len = strlen(root_real);
+
+                root_len = strlen(root_real);
                 if (strncmp(file_real, root_real, root_len) != 0 ||
                     (file_real[root_len] != '\0' && file_real[root_len] != '/'))
                 {
                     close(fd);
-                    const char *forbidden = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n";
-                    SSL_write(ssl, forbidden, strlen(forbidden));
-                    return 0;
+                    return STATIC_LOOKUP_FORBIDDEN;
                 }
 
-                off_t filesize = lseek(fd, 0, SEEK_END);
-                lseek(fd, 0, SEEK_SET);
-                char header[256];
-                snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", filesize);
-                SSL_write(ssl, header, strlen(header));
-                
-                printf("Sending static file: %s\n", filepath);
-                char filebuf[BUFFER_SIZE];
-                ssize_t bytes;
-                while ((bytes = read(fd, filebuf, sizeof(filebuf))) > 0)
+                *filesize_out = lseek(fd, 0, SEEK_END);
+                if (*filesize_out < 0 || lseek(fd, 0, SEEK_SET) < 0)
                 {
-                    printf("Sending %zd bytes from file\n", bytes);
-                    int sent = 0;
-                    while (sent < bytes) {
-                        int n = SSL_write(ssl, filebuf + sent, bytes - sent);
-                        if (n <= 0) {
-                            close(fd);
-                            return -1;
-                        }
-                        sent += n;
-                    }
+                    close(fd);
+                    return STATIC_LOOKUP_ERROR;
                 }
-                close(fd);
 
-                return 0;
+                *fd_out = fd;
+                *content_type_out = guess_content_type(file_real);
+                return STATIC_LOOKUP_READY;
             }
         }
     }
-    return -1;
+
+    return STATIC_LOOKUP_NO_ROUTE;
+}
+
+static int serve_static_h2(HttpRequest *req, ServerConfig *config, Http2Response *h2resp)
+{
+    int fd = -1;
+    off_t filesize = 0;
+    const char *content_type = "application/octet-stream";
+    StaticLookupResult lookup =
+        lookup_static_file(req, config, &fd, &filesize, &content_type);
+
+    if (lookup == STATIC_LOOKUP_NO_ROUTE)
+        return 1;
+    if (lookup == STATIC_LOOKUP_NOT_FOUND)
+        return populate_http2_response(h2resp, "", 404, "Not Found", "text/plain");
+    if (lookup == STATIC_LOOKUP_FORBIDDEN)
+        return populate_http2_response(h2resp, "", 403, "Forbidden", "text/plain");
+    if (lookup == STATIC_LOOKUP_ERROR)
+        return -1;
+
+    if ((size_t)filesize > sizeof(h2resp->body))
+    {
+        close(fd);
+        return populate_http2_response(h2resp, "", 413, "Payload Too Large", "text/plain");
+    }
+
+    size_t total = 0;
+    while (total < (size_t)filesize)
+    {
+        ssize_t n = read(fd, h2resp->body + total, (size_t)filesize - total);
+        if (n < 0)
+        {
+            close(fd);
+            return -1;
+        }
+        if (n == 0)
+            break;
+        total += (size_t)n;
+    }
+    close(fd);
+
+    h2resp->status_code = 200;
+    snprintf(h2resp->status_text, sizeof(h2resp->status_text), "OK");
+    snprintf(h2resp->content_type, sizeof(h2resp->content_type), "%s", content_type);
+    h2resp->body_len = total;
+    h2resp->num_headers = 0;
+    return 0;
+}
+
+static int has_matching_proxy_route(HttpRequest *req, ServerConfig *config)
+{
+    for (int i = 0; i < config->route_count; i++)
+    {
+        if (strcmp(config->routes[i].technology, "reverse_proxy") == 0)
+        {
+            size_t prefix_len = strlen(config->routes[i].path);
+            if (strlen(req->path) >= prefix_len &&
+                strncmp(req->path, config->routes[i].path, prefix_len) == 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* serve_static_tls()
+ *
+ * If the HTTP request's path starts with a static route, constructs the full file path,
+ * opens the file, and sends it to the client using SSL_write() and sendfile() for zero-copy.
+ * If the file is not found, a 404 response is sent.
+ */
+int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
+{
+    if (!req || !req->path || !config || !ssl)
+        return -1;
+
+    int fd = -1;
+    off_t filesize = 0;
+    const char *content_type = "application/octet-stream";
+    StaticLookupResult lookup =
+        lookup_static_file(req, config, &fd, &filesize, &content_type);
+
+    if (lookup == STATIC_LOOKUP_NO_ROUTE)
+        return -1;
+    if (lookup == STATIC_LOOKUP_NOT_FOUND)
+        return send_simple_response(ssl, "HTTP/1.1 404 Not Found", NULL, NULL);
+    if (lookup == STATIC_LOOKUP_FORBIDDEN)
+        return send_simple_response(ssl, "HTTP/1.1 403 Forbidden", NULL, NULL);
+    if (lookup == STATIC_LOOKUP_ERROR)
+        return -1;
+
+    char header[256];
+    int header_len = snprintf(header, sizeof(header),
+                              "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n\r\n",
+                              content_type, (long)filesize);
+    if (header_len < 0 || (size_t)header_len >= sizeof(header) ||
+        ssl_write_all(ssl, header, (size_t)header_len) != 0)
+    {
+        close(fd);
+        return -1;
+    }
+
+    char filebuf[BUFFER_SIZE];
+    ssize_t bytes;
+    while ((bytes = read(fd, filebuf, sizeof(filebuf))) > 0)
+    {
+        ssize_t sent = 0;
+        while (sent < bytes) {
+            int n = SSL_write(ssl, filebuf + sent, (int)(bytes - sent));
+            if (n <= 0) {
+                close(fd);
+                return -1;
+            }
+            sent += n;
+        }
+    }
+    if (bytes < 0)
+    {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
 }
 
 /* proxy_bidirectional_tls()
@@ -182,8 +363,11 @@ int proxy_bidirectional_tls(SSL *ssl, int backend_fd)
  * Forwards the entire HTTP request to a backend for reverse proxy functionality.
  * Then activates proxy_bidirectional_tls() to forward data bidirectionally.
  */
-int proxy_request_tls(HttpRequest *req, char *raw_request, int req_len, ServerConfig *config, SSL *ssl)
+int proxy_request_tls(HttpRequest *req, const char *raw_request, size_t req_len, ServerConfig *config, SSL *ssl)
 {
+    if (!req || !req->path || !raw_request || !config || !ssl)
+        return -1;
+
     for (int i = 0; i < config->route_count; i++)
     {
         if (strcmp(config->routes[i].technology, "reverse_proxy") == 0)
@@ -214,13 +398,13 @@ int proxy_request_tls(HttpRequest *req, char *raw_request, int req_len, ServerCo
                     close(backend_fd);
                     return -1;
                 }
-                int sent = 0;
+                size_t sent = 0;
                 while (sent < req_len)
                 {
-                    int n = send(backend_fd, raw_request + sent, req_len - sent, 0);
+                    ssize_t n = send(backend_fd, raw_request + sent, req_len - sent, 0);
                     if (n <= 0)
                         break;
-                    sent += n;
+                    sent += (size_t)n;
                 }
                 proxy_bidirectional_tls(ssl, backend_fd);
                 close(backend_fd);
@@ -241,43 +425,44 @@ int proxy_request_tls(HttpRequest *req, char *raw_request, int req_len, ServerCo
  */
 int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerConfig *config, SSL *ssl, Http2Response *h2resp)
 {
+    static const char *root_body =
+        "<html><head><title>High Performance Web Server</title></head>"
+        "<body><h1>Welcome to High Performance Web Server</h1>"
+        "<p>This server is designed to outperform Nginx and Apache by utilizing "
+        "advanced I/O techniques, a modular architecture, and an efficient reverse proxy mechanism.</p>"
+        "</body></html>";
+
+    if (!req || !req->path)
+        return -1;
+
     if (h2resp)
     {
-        snprintf(h2resp->body, sizeof(h2resp->body), "<html><body>Hello, HTTP/2!</body></html>");
-        h2resp->body_len = strlen(h2resp->body);
-        if (h2resp->body_len == 0) {
-            h2resp->body[0] = '\n'; // or ' '
-            h2resp->body[1] = '\0';
-            h2resp->body_len = 1;
+        if (strcmp(req->path, "/") == 0)
+            return populate_http2_response(h2resp, root_body, 200, "OK", "text/html");
+        if (config)
+        {
+            int static_result = serve_static_h2(req, config, h2resp);
+            if (static_result == 0)
+                return 0;
+            if (static_result < 0)
+                return -1;
+
+            if (has_matching_proxy_route(req, config))
+                return populate_http2_response(h2resp, "", 501, "Not Implemented", "text/plain");
         }
-        h2resp->status_code = 200;
-        strcpy(h2resp->status_text, "OK");
-        strcpy(h2resp->content_type, "text/html");
-        h2resp->num_headers = 0;
-        return 0;
+        return populate_http2_response(h2resp, "", 404, "Not Found", "text/plain");
     }
 
     if (strcmp(req->path, "/") == 0)
-    {
-        const char *html_content = "<html><head><title>High Performance Web Server</title></head>"
-                                   "<body><h1>Welcome to High Performance Web Server</h1>"
-                                   "<p>This server is designed to outperform Nginx and Apache by utilizing "
-                                   "advanced I/O techniques, a modular architecture, and an efficient reverse proxy mechanism.</p>"
-                                   "</body></html>";
-        size_t content_length = strlen(html_content);
-        char header[256];
-        snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %zu\r\n\r\n", content_length);
-        SSL_write(ssl, header, strlen(header));
-        SSL_write(ssl, html_content, content_length);
-        return 0;
-    }
+        return send_simple_response(ssl, "HTTP/1.1 200 OK", "Content-Type: text/html\r\n",
+                                    root_body);
 
     if (serve_static_tls(req, config, ssl) == 0)
         return 0;
-    if (proxy_request_tls(req, (char *)raw, raw_len, config, ssl) == 0)
+    if (proxy_request_tls(req, raw, raw_len, config, ssl) == 0)
         return 0;
 
-    const char *not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-    SSL_write(ssl, not_found, strlen(not_found));
+    if (send_simple_response(ssl, "HTTP/1.1 404 Not Found", NULL, NULL) != 0)
+        return -1;
     return -1;
 }

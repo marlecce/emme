@@ -224,3 +224,24 @@ Test(router_h2, route_sets_body_and_type)
     cr_assert_str_eq(resp.content_type, "text/html");
     cr_assert_eq(resp.status_code, 200);
 }
+
+Test(router_static, rejects_empty_document_root)
+{
+    ServerConfig config = {0};
+    config.route_count = 1;
+    strcpy(config.routes[0].path, "/static/");
+    strcpy(config.routes[0].technology, "static");
+    config.routes[0].document_root[0] = '\0';
+
+    HttpRequest req = {0};
+    req.path = "/static/index.html";
+
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), -1);
+
+    SSL_free(server);
+    SSL_free(client);
+}

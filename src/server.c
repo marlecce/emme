@@ -11,6 +11,7 @@
 #include <sys/sendfile.h>
 #include <sys/time.h>  // for instrumentation
 #include <signal.h>
+#include <errno.h>
 #include "config.h"
 #include "server.h"
 #include "http_parser.h"
@@ -32,6 +33,15 @@
         if (DEBUG_H2)                       \
             log_message(LOG_LEVEL_DEBUG, __VA_ARGS__); \
     } while (0)
+
+typedef struct {
+    SSL *ssl;
+    ServerConfig *config;
+    int want_read;
+    int want_write;
+    size_t total_read;
+    int logged_preface;
+} H2IO;
 
 static int find_header_end(const char *buf, size_t len)
 {
@@ -63,18 +73,38 @@ static int on_header_callback(nghttp2_session *session,
         if (!data)
         {
             data = calloc(1, sizeof(StreamData));
+            if (!data)
+            {
+                log_message(LOG_LEVEL_ERROR, "Failed to allocate HTTP/2 stream state");
+                return NGHTTP2_ERR_CALLBACK_FAILURE;
+            }
+            data->req.version = strdup("HTTP/2");
+            if (!data->req.version)
+            {
+                free(data);
+                log_message(LOG_LEVEL_ERROR, "Failed to allocate HTTP/2 request version");
+                return NGHTTP2_ERR_CALLBACK_FAILURE;
+            }
             nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, data);
         }
         if (namelen >= 1 && name[0] == ':')
         {
             if (strncmp((const char *)name, ":method", namelen) == 0)
+            {
+                free((void *)data->req.method);
                 data->req.method = strndup((const char *)value, valuelen);
+            }
             else if (strncmp((const char *)name, ":path", namelen) == 0)
+            {
+                free((void *)data->req.path);
                 data->req.path = strndup((const char *)value, valuelen);
+            }
             else if (strncmp((const char *)name, ":scheme", namelen) == 0)
                 ; /* ignore scheme */
             else if (strncmp((const char *)name, ":authority", namelen) == 0)
-                data->req.version = strndup((const char *)value, valuelen);
+            {
+                /* authority not currently used by routing */
+            }
         }
     }
     return 0;
@@ -110,7 +140,8 @@ static ssize_t http2_body_read_callback(
 /* Callback invoked when a complete frame is received */
 static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame *frame, void *user_data)
 {
-    (void)user_data;
+    H2IO *io = (H2IO *)user_data;
+    ServerConfig *config = io ? io->config : NULL;
     H2_LOG("on_frame_recv_callback: start");
     if (frame->hd.type == NGHTTP2_HEADERS &&
         frame->headers.cat == NGHTTP2_HCAT_REQUEST &&
@@ -124,7 +155,8 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
                      data->req.method ? data->req.method : "GET",
                      data->req.path ? data->req.path : "/",
                      data->req.version ? data->req.version : "HTTP/2");
-            log_message(LOG_LEVEL_INFO, "Routing HTTP/2 request for path (synthesized): %s", data->req.path);
+            log_message(LOG_LEVEL_INFO, "Routing HTTP/2 request for path (synthesized): %s",
+                        data->req.path ? data->req.path : "/");
             if (!data->resp)
                 data->resp = calloc(1, sizeof(Http2Response));
             if (!data->resp)
@@ -133,7 +165,14 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
                 return 0;
             }
             data->resp_sent = 0;
-            route_request_tls(&data->req, raw_request, strlen(raw_request), NULL, NULL, data->resp);
+            if (route_request_tls(&data->req, raw_request, strlen(raw_request), config, NULL, data->resp) != 0 &&
+                data->resp->status_code == 0) {
+                data->resp->status_code = 500;
+                snprintf(data->resp->status_text, sizeof(data->resp->status_text), "Internal Server Error");
+                data->resp->content_type[0] = '\0';
+                data->resp->body[0] = '\0';
+                data->resp->body_len = 0;
+            }
             if (data->resp->status_code == 0)
                 data->resp->status_code = 200;
             snprintf(data->resp->status_code_str, sizeof(data->resp->status_code_str),
@@ -145,13 +184,6 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
                                              data->resp->content_type[0] ? data->resp->content_type : "text/plain");
             data->resp->headers[2] = MAKE_NV("content-length", data->resp->content_length_str);
             data->resp->num_headers = 3;
-            if (data->resp->body_len == 0)
-            {
-                static const char dummy_body[] = "\n";
-                strncpy(data->resp->body, dummy_body, sizeof(data->resp->body)-1);
-                data->resp->body[sizeof(data->resp->body)-1] = '\0';
-                data->resp->body_len = strlen(data->resp->body);
-            }
             nghttp2_data_provider data_prd;
             data_prd.source.ptr = data;
             data_prd.read_callback = http2_body_read_callback;
@@ -197,6 +229,11 @@ static struct io_uring global_ring;  // Global io_uring instance for the accept 
 static volatile sig_atomic_t g_shutdown = 0;
 static int g_server_fd = -1;
 
+static void log_io_uring_error(const char *context, int ret)
+{
+    log_message(LOG_LEVEL_ERROR, "%s: %s", context, strerror(-ret));
+}
+
 static void handle_signal(int sig)
 {
     (void)sig;
@@ -207,14 +244,6 @@ static void handle_signal(int sig)
 
 static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring);
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config);
-
-typedef struct {
-    SSL *ssl;
-    int want_read;
-    int want_write;
-    size_t total_read;
-    int logged_preface;
-} H2IO;
 
 static void log_hex_prefix(const uint8_t *data, size_t len)
 {
@@ -326,14 +355,14 @@ static int perform_nonblocking_ssl_accept(SSL *ssl, int client_fd, struct io_uri
             int submit_ret = io_uring_submit(ring);
             if (submit_ret < 0)
             {
-                log_message(LOG_LEVEL_ERROR, "io_uring_submit failed during handshake: %s", strerror(-submit_ret));
+                log_io_uring_error("io_uring_submit failed during handshake", submit_ret);
                 return -1;
             }
             struct io_uring_cqe *cqe;
             int wait_ret = io_uring_wait_cqe(ring, &cqe);
             if (wait_ret < 0)
             {
-                log_message(LOG_LEVEL_ERROR, "io_uring_wait_cqe failed during handshake: %s", strerror(-wait_ret));
+                log_io_uring_error("io_uring_wait_cqe failed during handshake", wait_ret);
                 return -1;
             }
             io_uring_cqe_seen(ring, cqe);
@@ -353,7 +382,6 @@ static int perform_nonblocking_ssl_accept(SSL *ssl, int client_fd, struct io_uri
 /* HTTP/2 connection handler using thread-local io_uring */
 static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring)
 {
-    (void)config;
     (void)ring;
     int flags = fcntl(client_fd, F_GETFL, 0);
     fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
@@ -369,7 +397,14 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
     nghttp2_session_callbacks_set_on_header_callback(callbacks, on_header_callback);
     nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, on_frame_recv_callback);
     nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
-    H2IO io = {.ssl = ssl, .want_read = 0, .want_write = 0, .total_read = 0, .logged_preface = 0};
+    H2IO io = {
+        .ssl = ssl,
+        .config = config,
+        .want_read = 0,
+        .want_write = 0,
+        .total_read = 0,
+        .logged_preface = 0,
+    };
     if (nghttp2_session_server_new(&session, callbacks, &io) != 0)
     {
         log_message(LOG_LEVEL_ERROR, "Failed to create nghttp2 session");
@@ -594,16 +629,32 @@ int start_server(ServerConfig *config)
 {
     int server_fd, client_fd;
     struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    if (io_uring_queue_init(QUEUE_DEPTH * 2, &global_ring, 0) != 0)
+    int ring_ret;
+    size_t max_threads;
+    size_t initial_threads;
+
+    g_shutdown = 0;
+    memset(&server_addr, 0, sizeof(server_addr));
+    memset(&client_addr, 0, sizeof(client_addr));
+
+    ring_ret = io_uring_queue_init(QUEUE_DEPTH * 2, &global_ring, 0);
+    if (ring_ret != 0)
     {
-        perror("global io_uring_queue_init failed");
+        fprintf(stderr, "global io_uring_queue_init failed: %s\n", strerror(-ring_ret));
         return 1;
     }
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1)
     {
         perror("Socket creation error");
+        io_uring_queue_exit(&global_ring);
+        return 1;
+    }
+    int enable = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1)
+    {
+        perror("setsockopt(SO_REUSEADDR) failed");
+        close(server_fd);
         io_uring_queue_exit(&global_ring);
         return 1;
     }
@@ -628,33 +679,51 @@ int start_server(ServerConfig *config)
         return 1;
     }
     ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key);
-    ThreadPool *pool = thread_pool_create(32, config->max_connections);
+    if (!ssl_ctx)
+    {
+        close(server_fd);
+        io_uring_queue_exit(&global_ring);
+        return 1;
+    }
+
+    max_threads = config->max_connections > 0 ? (size_t)config->max_connections : 32;
+    initial_threads = max_threads < 32 ? max_threads : 32;
+
+    ThreadPool *pool = thread_pool_create(initial_threads, max_threads);
     if (!pool)
     {
         fprintf(stderr, "Failed to create thread pool\n");
         close(server_fd);
         io_uring_queue_exit(&global_ring);
+        cleanup_ssl_context(ssl_ctx);
         return 1;
     }
     printf("Emme listening on port %d...\n", config->port);
     while (!g_shutdown)
     {
         struct io_uring_sqe *sqe = io_uring_get_sqe(&global_ring);
+        socklen_t client_len = sizeof(client_addr);
+
         if (!sqe)
         {
             fprintf(stderr, "Failed to get SQE for accept\n");
             break;
         }
         io_uring_prep_accept(sqe, server_fd, (struct sockaddr *)&client_addr, &client_len, 0);
-        if (io_uring_submit(&global_ring) < 0)
+        int submit_ret = io_uring_submit(&global_ring);
+        if (submit_ret < 0)
         {
-            perror("io_uring_submit (accept) failed");
+            fprintf(stderr, "io_uring_submit (accept) failed: %s\n", strerror(-submit_ret));
             break;
         }
         struct io_uring_cqe *cqe;
-        if (io_uring_wait_cqe(&global_ring, &cqe) < 0)
+        int wait_ret = io_uring_wait_cqe(&global_ring, &cqe);
+        if (wait_ret < 0)
         {
-            perror("io_uring_wait_cqe (accept) failed");
+            if (g_shutdown &&
+                (-wait_ret == EINTR || -wait_ret == EBADF || -wait_ret == ENXIO))
+                break;
+            fprintf(stderr, "io_uring_wait_cqe (accept) failed: %s\n", strerror(-wait_ret));
             break;
         }
         client_fd = cqe->res;
@@ -691,6 +760,7 @@ int start_server(ServerConfig *config)
     }
     thread_pool_destroy(pool);
     close(server_fd);
+    g_server_fd = -1;
     io_uring_queue_exit(&global_ring);
     cleanup_ssl_context(ssl_ctx);
     return 0;

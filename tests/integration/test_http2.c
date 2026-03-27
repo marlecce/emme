@@ -287,7 +287,7 @@ static int client_on_stream_close_callback(nghttp2_session *session,
     return 0;
 }
 
-Test(https2_blackbox, get_root_over_h2)
+static void run_h2_get_request(const char *path, int expected_status, const char *expected_body_substr)
 {
     launch_server();
 
@@ -311,7 +311,7 @@ Test(https2_blackbox, get_root_over_h2)
 
     nghttp2_nv hdrs[] = {
         {(uint8_t *)":method", (uint8_t *)"GET", 7, 3, NGHTTP2_NV_FLAG_NONE},
-        {(uint8_t *)":path", (uint8_t *)"/", 5, 1, NGHTTP2_NV_FLAG_NONE},
+        {(uint8_t *)":path", (uint8_t *)path, 5, strlen(path), NGHTTP2_NV_FLAG_NONE},
         {(uint8_t *)":scheme", (uint8_t *)"https", 7, 5, NGHTTP2_NV_FLAG_NONE},
         {(uint8_t *)":authority", (uint8_t *)"localhost", 10, 9, NGHTTP2_NV_FLAG_NONE},
     };
@@ -360,13 +360,32 @@ Test(https2_blackbox, get_root_over_h2)
     }
     cr_assert(ctx_state.state.done, "HTTP/2 response timed out");
 
-    cr_assert_eq(ctx_state.state.status, 200, "Expected 200, got %d", ctx_state.state.status);
-    cr_assert(strstr(ctx_state.state.body, "Hello, HTTP/2!") != NULL,
-              "Expected HTTP/2 body, got:\n%s", ctx_state.state.body);
+    cr_assert_eq(ctx_state.state.status, expected_status,
+                 "Expected %d, got %d", expected_status, ctx_state.state.status);
+    if (expected_body_substr) {
+        cr_assert(strstr(ctx_state.state.body, expected_body_substr) != NULL,
+                  "Expected body to contain '%s', got:\n%s",
+                  expected_body_substr, ctx_state.state.body);
+    }
 
     nghttp2_session_del(session);
     nghttp2_session_callbacks_del(callbacks);
     SSL_shutdown(ssl);
     SSL_free(ssl);
     SSL_CTX_free(ctx);
+}
+
+Test(https2_blackbox, get_root_over_h2)
+{
+    run_h2_get_request("/", 200, "Welcome to High Performance Web Server");
+}
+
+Test(https2_blackbox, get_static_file_over_h2)
+{
+    run_h2_get_request("/static/index.html", 200, "Hello, world!");
+}
+
+Test(https2_blackbox, get_missing_static_over_h2)
+{
+    run_h2_get_request("/static/notfound.html", 404, NULL);
 }

@@ -8,6 +8,6 @@
  
 int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl);
 int proxy_bidirectional_tls(SSL *ssl, int backend_fd);
-int proxy_request_tls(HttpRequest *req, char *raw_request, int req_len, ServerConfig *config, SSL *ssl);
+int proxy_request_tls(HttpRequest *req, const char *raw_request, size_t req_len, ServerConfig *config, SSL *ssl);
 int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerConfig *config, SSL *ssl, Http2Response *h2resp);
 #endif

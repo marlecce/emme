@@ -12,5 +12,6 @@
         "http_parser.h": "c",
         "tls.h": "c",
         "http2_response.h": "c"
-    }
+    },
+    "livePreview.defaultPreviewPath": "/coverage/index.html"
 }

@@ -129,3 +129,26 @@ Test(thread_pool, grows_under_load)
 
     thread_pool_destroy(pool);
 }
+
+Test(thread_pool, clamps_min_threads_to_max_threads)
+{
+    CountSync sync = {
+        .lock = PTHREAD_MUTEX_INITIALIZER,
+        .cond = PTHREAD_COND_INITIALIZER,
+        .completed = 0,
+        .target = 3,
+    };
+
+    ThreadPool *pool = thread_pool_create(4, 2);
+    cr_assert_not_null(pool, "pool create should normalize min/max thread counts");
+
+    for (int i = 0; i < sync.target; i++)
+        cr_assert(thread_pool_add_task(pool, task_inc, &sync));
+
+    pthread_mutex_lock(&sync.lock);
+    int ok = wait_for_value(&sync.cond, &sync.lock, &sync.completed, sync.target, 1000);
+    pthread_mutex_unlock(&sync.lock);
+    cr_assert(ok, "tasks did not complete");
+
+    thread_pool_destroy(pool);
+}

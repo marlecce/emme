@@ -44,12 +44,13 @@ struct ThreadPool {
 };
 
 // Initializes the task queue.
-static void task_queue_init(TaskQueue *queue) {
+static bool task_queue_init(TaskQueue *queue) {
     queue->capacity = TASK_QUEUE_INITIAL_CAPACITY;
     queue->tasks = malloc(queue->capacity * sizeof(CacheAlignedTask));
     queue->count = 0;
     queue->front = 0;
     queue->rear = 0;
+    return queue->tasks != NULL;
 }
 
 // Destroys the task queue.
@@ -147,6 +148,14 @@ ThreadPool *thread_pool_create(size_t min_threads, size_t max_threads) {
     ThreadPool *pool = malloc(sizeof(ThreadPool));
     if (!pool)
         return NULL;
+    if (max_threads == 0) {
+        free(pool);
+        return NULL;
+    }
+    if (min_threads == 0)
+        min_threads = 1;
+    if (min_threads > max_threads)
+        min_threads = max_threads;
     pool->min_threads = min_threads;
     pool->max_threads = max_threads;
     pool->num_threads = min_threads;
@@ -154,7 +163,12 @@ ThreadPool *thread_pool_create(size_t min_threads, size_t max_threads) {
     pool->shutdown = false;
     pthread_mutex_init(&pool->lock, NULL);
     pthread_cond_init(&pool->cond, NULL);
-    task_queue_init(&pool->queue);
+    if (!task_queue_init(&pool->queue)) {
+        pthread_mutex_destroy(&pool->lock);
+        pthread_cond_destroy(&pool->cond);
+        free(pool);
+        return NULL;
+    }
     pool->threads = malloc(max_threads * sizeof(pthread_t));
     pool->worker_args = malloc(max_threads * sizeof(WorkerArg));
     pool->free_indices = malloc(max_threads * sizeof(size_t));
@@ -163,6 +177,9 @@ ThreadPool *thread_pool_create(size_t min_threads, size_t max_threads) {
         free(pool->threads);
         free(pool->worker_args);
         free(pool->free_indices);
+        task_queue_destroy(&pool->queue);
+        pthread_mutex_destroy(&pool->lock);
+        pthread_cond_destroy(&pool->cond);
         free(pool);
         return NULL;
     }
@@ -170,7 +187,20 @@ ThreadPool *thread_pool_create(size_t min_threads, size_t max_threads) {
     for (size_t i = 0; i < min_threads; i++) {
         pool->worker_args[i].pool = pool;
         pool->worker_args[i].index = i;
-        pthread_create(&pool->threads[i], NULL, worker_thread, &pool->worker_args[i]);
+        if (pthread_create(&pool->threads[i], NULL, worker_thread, &pool->worker_args[i]) != 0) {
+            pool->shutdown = true;
+            pthread_cond_broadcast(&pool->cond);
+            for (size_t j = 0; j < pool->threads_created; j++)
+                pthread_join(pool->threads[j], NULL);
+            free(pool->threads);
+            free(pool->worker_args);
+            free(pool->free_indices);
+            task_queue_destroy(&pool->queue);
+            pthread_mutex_destroy(&pool->lock);
+            pthread_cond_destroy(&pool->cond);
+            free(pool);
+            return NULL;
+        }
         pool->threads_created++;
     }
     return pool;
