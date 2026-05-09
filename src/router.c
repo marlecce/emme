@@ -40,35 +40,22 @@ static int send_health_response(SSL *ssl, Http2Response *h2resp)
     size_t body_len = strlen(body);
     
     if (h2resp) {
-        /* HTTP/2 response */
-        h2resp->status_code = 200;
-        snprintf(h2resp->status_text, sizeof(h2resp->status_text), "OK");
-        snprintf(h2resp->content_type, sizeof(h2resp->content_type), "application/json");
-        memcpy(h2resp->body, body, body_len);
-        h2resp->body[body_len] = '\0';
-        h2resp->body_len = body_len;
-        h2resp->num_headers = 0;
-        return 0;
+        h2_response_init(h2resp);
+        h2_response_set_status(h2resp, 200, "OK");
+        h2_response_set_content_type(h2resp, "application/json");
+        h2_response_set_body(h2resp, body, body_len);
+        h2_response_finalize(h2resp);
     } else {
-        /* HTTP/1.1 response */
-        char header[256];
-        int header_len = snprintf(header, sizeof(header),
+        const char *headers =
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: application/json\r\n"
-            "Content-Length: %zu\r\n"
-            "\r\n", body_len);
-        
-        if (header_len < 0 || (size_t)header_len >= sizeof(header))
-            return -1;
-        
-        if (ssl_write_all(ssl, header, header_len) != 0)
-            return -1;
-        
-        if (ssl_write_all(ssl, body, body_len) != 0)
-            return -1;
-        
-        return 0;
+            "Content-Length: 15\r\n"
+            "\r\n";
+        ssl_write_all(ssl, headers, strlen(headers));
+        ssl_write_all(ssl, body, body_len);
     }
+    
+    return 0;
 }
 
 static int is_health_check(const HttpRequest *req)
@@ -187,8 +174,12 @@ static StaticLookupResult lookup_static_file(const HttpRequest *req, ServerConfi
                 if (written < 0 || (size_t)written >= sizeof(filepath))
                     return STATIC_LOOKUP_ERROR;
 
-                if (!realpath(root, root_real))
+                if (config->routes[i].document_root_resolved) {
+                    strncpy(root_real, config->routes[i].document_root_real, sizeof(root_real) - 1);
+                    root_real[sizeof(root_real) - 1] = '\0';
+                } else if (!realpath(root, root_real)) {
                     return STATIC_LOOKUP_ERROR;
+                }
 
                 fd = open(filepath, O_RDONLY);
                 if (fd < 0)
@@ -248,6 +239,10 @@ static int serve_static_h2(HttpRequest *req, ServerConfig *config, Http2Response
         return populate_http2_response(h2resp, "", 413, "Payload Too Large", "text/plain");
     }
 
+    h2_response_init(h2resp);
+    h2_response_set_status(h2resp, 200, "OK");
+    h2_response_set_content_type(h2resp, content_type);
+
     size_t total = 0;
     while (total < (size_t)filesize)
     {
@@ -263,11 +258,8 @@ static int serve_static_h2(HttpRequest *req, ServerConfig *config, Http2Response
     }
     close(fd);
 
-    h2resp->status_code = 200;
-    snprintf(h2resp->status_text, sizeof(h2resp->status_text), "OK");
-    snprintf(h2resp->content_type, sizeof(h2resp->content_type), "%s", content_type);
-    h2resp->body_len = total;
-    h2resp->num_headers = 0;
+    h2_response_set_body_len(h2resp, total);
+    h2_response_finalize(h2resp);
     return 0;
 }
 
@@ -327,14 +319,10 @@ int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
     ssize_t bytes;
     while ((bytes = read(fd, filebuf, sizeof(filebuf))) > 0)
     {
-        ssize_t sent = 0;
-        while (sent < bytes) {
-            int n = SSL_write(ssl, filebuf + sent, (int)(bytes - sent));
-            if (n <= 0) {
-                close(fd);
-                return -1;
-            }
-            sent += n;
+        if (ssl_write_all(ssl, filebuf, (size_t)bytes) != 0)
+        {
+            close(fd);
+            return -1;
         }
     }
     if (bytes < 0)
@@ -362,16 +350,9 @@ int proxy_bidirectional_tls(SSL *ssl, int backend_fd)
         int n = read(backend_fd, buf, sizeof(buf));
         if (n > 0)
         {
-            int sent = 0;
-            while (sent < n)
+            if (ssl_write_all(ssl, buf, (size_t)n) != 0)
             {
-                int s = SSL_write(ssl, buf + sent, n - sent);
-                if (s <= 0)
-                {
-                    done = 1;
-                    break;
-                }
-                sent += s;
+                done = 1;
             }
         }
         else if (n < 0)

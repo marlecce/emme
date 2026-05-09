@@ -456,6 +456,19 @@ int load_config(ServerConfig *config, const char *file_path)
                                 route->backend, sizeof(route->backend)) != 0)
                 goto cleanup;
 
+            if (route->document_root[0] != '\0') {
+                if (realpath(route->document_root, route->document_root_real)) {
+                    route->document_root_resolved = 1;
+                } else {
+                    route->document_root_resolved = 0;
+                    strncpy(route->document_root_real, route->document_root,
+                            sizeof(route->document_root_real) - 1);
+                    route->document_root_real[sizeof(route->document_root_real) - 1] = '\0';
+                }
+            } else {
+                route->document_root_resolved = 0;
+            }
+
             config->route_count++;
         }
     }

@@ -4,12 +4,15 @@
 #define MAX_ROUTES 16
 #define MAX_LOG_LEVEL 16
 
+#include <limits.h>
 #include "logging_common.h"
 
 typedef struct {
     char path[128];       
     char technology[32];   
     char document_root[256];
+    char document_root_real[PATH_MAX];
+    int document_root_resolved;
     char backend[64];
 } Route;
 

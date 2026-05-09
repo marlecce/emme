@@ -34,13 +34,14 @@
             log_message(LOG_LEVEL_DEBUG, __VA_ARGS__); \
     } while (0)
 
+#define H2_POLL_TIMEOUT_MS 100
+
 typedef struct {
     SSL *ssl;
     ServerConfig *config;
     int want_read;
     int want_write;
     size_t total_read;
-    int logged_preface;
 } H2IO;
 
 static int find_header_end(const char *buf, size_t len)
@@ -78,6 +79,8 @@ static int on_header_callback(nghttp2_session *session,
                 log_message(LOG_LEVEL_ERROR, "Failed to allocate HTTP/2 stream state");
                 return NGHTTP2_ERR_CALLBACK_FAILURE;
             }
+            data->req.method = NULL;
+            data->req.path = NULL;
             data->req.version = strdup("HTTP/2");
             if (!data->req.version)
             {
@@ -93,11 +96,21 @@ static int on_header_callback(nghttp2_session *session,
             {
                 free((void *)data->req.method);
                 data->req.method = strndup((const char *)value, valuelen);
+                if (!data->req.method)
+                {
+                    log_message(LOG_LEVEL_ERROR, "Failed to allocate HTTP/2 method");
+                    return NGHTTP2_ERR_CALLBACK_FAILURE;
+                }
             }
             else if (strncmp((const char *)name, ":path", namelen) == 0)
             {
                 free((void *)data->req.path);
                 data->req.path = strndup((const char *)value, valuelen);
+                if (!data->req.path)
+                {
+                    log_message(LOG_LEVEL_ERROR, "Failed to allocate HTTP/2 path");
+                    return NGHTTP2_ERR_CALLBACK_FAILURE;
+                }
             }
             else if (strncmp((const char *)name, ":scheme", namelen) == 0)
                 ; /* ignore scheme */
@@ -117,6 +130,11 @@ static ssize_t http2_body_read_callback(
     (void)session;
     (void)stream_id;
     (void)user_data;
+    if (!source || !source->ptr)
+    {
+        *data_flags = NGHTTP2_DATA_FLAG_EOF;
+        return 0;
+    }
     StreamData *data = (StreamData *)source->ptr;
     if (!data || !data->resp)
     {
@@ -143,6 +161,8 @@ static int on_frame_recv_callback(nghttp2_session *session, const nghttp2_frame 
     H2IO *io = (H2IO *)user_data;
     ServerConfig *config = io ? io->config : NULL;
     H2_LOG("on_frame_recv_callback: start");
+    if (!frame)
+        return 0;
     if (frame->hd.type == NGHTTP2_HEADERS &&
         frame->headers.cat == NGHTTP2_HCAT_REQUEST &&
         (frame->hd.flags & NGHTTP2_FLAG_END_HEADERS))
@@ -217,7 +237,10 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
         free((void *)data->req.method);
         free((void *)data->req.path);
         free((void *)data->req.version);
-        free(data->resp);
+        if (data->resp)
+        {
+            free(data->resp);
+        }
         free(data);
         nghttp2_session_set_stream_user_data(session, stream_id, NULL);
     }
@@ -244,19 +267,6 @@ static void handle_signal(int sig)
 
 static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring);
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config);
-
-static void log_hex_prefix(const uint8_t *data, size_t len)
-{
-    char hexbuf[256];
-    size_t max = len > 32 ? 32 : len;
-    size_t off = 0;
-    for (size_t i = 0; i < max && off + 3 < sizeof(hexbuf); i++)
-    {
-        off += snprintf(hexbuf + off, sizeof(hexbuf) - off, "%02x ", data[i]);
-    }
-    hexbuf[off] = '\0';
-    H2_LOG("h2 recv prefix (%zu bytes): %s", max, hexbuf);
-}
 
 /* Callback for nghttp2 to send data via SSL */
 static ssize_t send_callback(nghttp2_session *session, const uint8_t *data,
@@ -324,11 +334,6 @@ static ssize_t recv_callback(nghttp2_session *session, uint8_t *buf, size_t leng
         return NGHTTP2_ERR_CALLBACK_FAILURE;
     }
     io->total_read += (size_t)ret;
-    if (!io->logged_preface)
-    {
-        log_hex_prefix(buf, (size_t)ret);
-        io->logged_preface = 1;
-    }
     H2_LOG("recv_callback: end, bytes read: %zd", ret);
     return ret;
 }
@@ -403,7 +408,6 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
         .want_read = 0,
         .want_write = 0,
         .total_read = 0,
-        .logged_preface = 0,
     };
     if (nghttp2_session_server_new(&session, callbacks, &io) != 0)
     {
@@ -451,7 +455,7 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
                nghttp2_session_want_read(session), nghttp2_session_want_write(session),
                io.want_read, io.want_write, events);
         struct pollfd pfd = {.fd = client_fd, .events = events};
-        int pret = poll(&pfd, 1, 1000);
+        int pret = poll(&pfd, 1, H2_POLL_TIMEOUT_MS);
         if (pret < 0)
         {
             log_message(LOG_LEVEL_ERROR, "poll failed: %s", strerror(errno));
@@ -572,14 +576,23 @@ void client_task(void *arg)
     if (!local_ring)
     {
         local_ring = malloc(sizeof(struct io_uring));
-        if (io_uring_queue_init(QUEUE_DEPTH, local_ring, 0) < 0)
+        if (!local_ring || io_uring_queue_init(QUEUE_DEPTH, local_ring, 0) < 0)
         {
             log_message(LOG_LEVEL_ERROR, "Failed to initialize thread-local io_uring");
-            free(local_ring);
-            local_ring = NULL;
+            if (local_ring)
+            {
+                free(local_ring);
+                local_ring = NULL;
+            }
+            close(data->client_fd);
+            free(data);
+            return;
         }
     }
     handle_client(data->client_fd, data->config, local_ring);
+    io_uring_queue_exit(local_ring);
+    free(local_ring);
+    local_ring = NULL;
     free(data);
 }
 
@@ -641,14 +654,14 @@ int start_server(ServerConfig *config)
     if (ring_ret != 0)
     {
         fprintf(stderr, "global io_uring_queue_init failed: %s\n", strerror(-ring_ret));
-        return 1;
+        return -1;
     }
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd == -1)
     {
         perror("Socket creation error");
         io_uring_queue_exit(&global_ring);
-        return 1;
+        return -1;
     }
     int enable = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1)
@@ -656,7 +669,7 @@ int start_server(ServerConfig *config)
         perror("setsockopt(SO_REUSEADDR) failed");
         close(server_fd);
         io_uring_queue_exit(&global_ring);
-        return 1;
+        return -1;
     }
     g_server_fd = server_fd;
     signal(SIGTERM, handle_signal);
@@ -669,21 +682,21 @@ int start_server(ServerConfig *config)
         perror("Bind error");
         close(server_fd);
         io_uring_queue_exit(&global_ring);
-        return 1;
+        return -1;
     }
     if (listen(server_fd, 2048) == -1)
     {
         perror("Listen error");
         close(server_fd);
         io_uring_queue_exit(&global_ring);
-        return 1;
+        return -1;
     }
     ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key);
     if (!ssl_ctx)
     {
         close(server_fd);
         io_uring_queue_exit(&global_ring);
-        return 1;
+        return -1;
     }
 
     max_threads = config->max_connections > 0 ? (size_t)config->max_connections : 32;
@@ -696,7 +709,7 @@ int start_server(ServerConfig *config)
         close(server_fd);
         io_uring_queue_exit(&global_ring);
         cleanup_ssl_context(ssl_ctx);
-        return 1;
+        return -1;
     }
     printf("Emme listening on port %d...\n", config->port);
     while (!g_shutdown)

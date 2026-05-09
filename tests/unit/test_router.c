@@ -245,3 +245,264 @@ Test(router_static, rejects_empty_document_root)
     SSL_free(server);
     SSL_free(client);
 }
+
+Test(router_static, serves_css_file)
+{
+    setup_static_dir();
+    FILE *f = fopen(STATIC_DIR "/style.css", "w");
+    cr_assert_not_null(f);
+    fprintf(f, "body { color: red; }");
+    fclose(f);
+
+    ServerConfig config = {0};
+    config.route_count = 1;
+    strcpy(config.routes[0].path, "/static/");
+    strcpy(config.routes[0].technology, "static");
+    strcpy(config.routes[0].document_root, STATIC_DIR);
+
+    HttpRequest req = {0};
+    req.path = "/static/style.css";
+
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), 0);
+
+    char resp[4096];
+    int n = read_ssl_response(client, resp, sizeof(resp));
+    cr_assert_gt(n, 0);
+    cr_assert(strstr(resp, "HTTP/1.1 200 OK"));
+    cr_assert(strstr(resp, "text/css"));
+    cr_assert(strstr(resp, "color: red"));
+
+    SSL_free(server);
+    SSL_free(client);
+    unlink(STATIC_DIR "/style.css");
+    cleanup_static_dir();
+}
+
+Test(router_static, serves_json_file)
+{
+    setup_static_dir();
+    FILE *f = fopen(STATIC_DIR "/data.json", "w");
+    cr_assert_not_null(f);
+    fprintf(f, "{\"key\":\"value\"}");
+    fclose(f);
+
+    ServerConfig config = {0};
+    config.route_count = 1;
+    strcpy(config.routes[0].path, "/static/");
+    strcpy(config.routes[0].technology, "static");
+    strcpy(config.routes[0].document_root, STATIC_DIR);
+
+    HttpRequest req = {0};
+    req.path = "/static/data.json";
+
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), 0);
+
+    char resp[4096];
+    int n = read_ssl_response(client, resp, sizeof(resp));
+    cr_assert_gt(n, 0);
+    cr_assert(strstr(resp, "application/json"));
+    cr_assert(strstr(resp, "{\"key\":\"value\"}"));
+
+    SSL_free(server);
+    SSL_free(client);
+    unlink(STATIC_DIR "/data.json");
+    cleanup_static_dir();
+}
+
+Test(router_static, serves_png_file)
+{
+    setup_static_dir();
+    FILE *f = fopen(STATIC_DIR "/image.png", "wb");
+    cr_assert_not_null(f);
+    fprintf(f, "\x89PNG\r\n\x1a\n");
+    fclose(f);
+
+    ServerConfig config = {0};
+    config.route_count = 1;
+    strcpy(config.routes[0].path, "/static/");
+    strcpy(config.routes[0].technology, "static");
+    strcpy(config.routes[0].document_root, STATIC_DIR);
+
+    HttpRequest req = {0};
+    req.path = "/static/image.png";
+
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), 0);
+
+    char resp[4096];
+    int n = read_ssl_response(client, resp, sizeof(resp));
+    cr_assert_gt(n, 0);
+    cr_assert(strstr(resp, "image/png"));
+
+    SSL_free(server);
+    SSL_free(client);
+    unlink(STATIC_DIR "/image.png");
+    cleanup_static_dir();
+}
+
+Test(router_static, handles_null_request)
+{
+    ServerConfig config = {0};
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(NULL, &config, server), -1);
+
+    SSL_free(server);
+    SSL_free(client);
+}
+
+Test(router_static, handles_null_path)
+{
+    ServerConfig config = {0};
+    HttpRequest req = {0};
+    req.path = NULL;
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), -1);
+
+    SSL_free(server);
+    SSL_free(client);
+}
+
+Test(router_static, handles_no_matching_route)
+{
+    setup_static_dir();
+
+    ServerConfig config = {0};
+    config.route_count = 1;
+    strcpy(config.routes[0].path, "/other/");
+    strcpy(config.routes[0].technology, "static");
+    strcpy(config.routes[0].document_root, STATIC_DIR);
+
+    HttpRequest req = {0};
+    req.path = "/static/index.html";
+
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), -1);
+
+    SSL_free(server);
+    SSL_free(client);
+    cleanup_static_dir();
+}
+
+Test(router_static, serves_jpg_file)
+{
+    setup_static_dir();
+    FILE *f = fopen(STATIC_DIR "/photo.jpg", "wb");
+    cr_assert_not_null(f);
+    fprintf(f, "\xFF\xD8\xFF");
+    fclose(f);
+
+    ServerConfig config = {0};
+    config.route_count = 1;
+    strcpy(config.routes[0].path, "/static/");
+    strcpy(config.routes[0].technology, "static");
+    strcpy(config.routes[0].document_root, STATIC_DIR);
+
+    HttpRequest req = {0};
+    req.path = "/static/photo.jpg";
+
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), 0);
+
+    char resp[4096];
+    int n = read_ssl_response(client, resp, sizeof(resp));
+    cr_assert_gt(n, 0);
+    cr_assert(strstr(resp, "image/jpeg"));
+
+    SSL_free(server);
+    SSL_free(client);
+    unlink(STATIC_DIR "/photo.jpg");
+    cleanup_static_dir();
+}
+
+Test(router_static, serves_js_file)
+{
+    setup_static_dir();
+    FILE *f = fopen(STATIC_DIR "/script.js", "w");
+    cr_assert_not_null(f);
+    fprintf(f, "console.log('test');");
+    fclose(f);
+
+    ServerConfig config = {0};
+    config.route_count = 1;
+    strcpy(config.routes[0].path, "/static/");
+    strcpy(config.routes[0].technology, "static");
+    strcpy(config.routes[0].document_root, STATIC_DIR);
+
+    HttpRequest req = {0};
+    req.path = "/static/script.js";
+
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), 0);
+
+    char resp[4096];
+    int n = read_ssl_response(client, resp, sizeof(resp));
+    cr_assert_gt(n, 0);
+    cr_assert(strstr(resp, "application/javascript"));
+    cr_assert(strstr(resp, "console.log"));
+
+    SSL_free(server);
+    SSL_free(client);
+    unlink(STATIC_DIR "/script.js");
+    cleanup_static_dir();
+}
+
+Test(router_static, serves_txt_file)
+{
+    setup_static_dir();
+    FILE *f = fopen(STATIC_DIR "/readme.txt", "w");
+    cr_assert_not_null(f);
+    fprintf(f, "Hello text");
+    fclose(f);
+
+    ServerConfig config = {0};
+    config.route_count = 1;
+    strcpy(config.routes[0].path, "/static/");
+    strcpy(config.routes[0].technology, "static");
+    strcpy(config.routes[0].document_root, STATIC_DIR);
+
+    HttpRequest req = {0};
+    req.path = "/static/readme.txt";
+
+    SSL *server = NULL;
+    SSL *client = NULL;
+    create_ssl_pair(&server, &client);
+
+    cr_assert_eq(serve_static_tls(&req, &config, server), 0);
+
+    char resp[4096];
+    int n = read_ssl_response(client, resp, sizeof(resp));
+    cr_assert_gt(n, 0);
+    cr_assert(strstr(resp, "text/plain"));
+    cr_assert(strstr(resp, "Hello text"));
+
+    SSL_free(server);
+    SSL_free(client);
+    unlink(STATIC_DIR "/readme.txt");
+    cleanup_static_dir();
+}

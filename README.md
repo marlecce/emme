@@ -232,45 +232,17 @@ open coverage/index.html
 
 ## Production Deployment
 
-### Bare Metal / VM Deployment
-
-For maximum performance, deploy directly on bare metal or cloud VMs:
-
-```bash
-# Systemd service example
-sudo cp emme /usr/local/bin/
-sudo cp emme.service /etc/systemd/system/
-sudo systemctl enable emme
-sudo systemctl start emme
-```
-
-### Health Check Integration
-
-**HAProxy:**
-```haproxy
-backend emme_servers
-    option httpchk GET /health
-    http-check expect status 200
-    server emme1 192.168.1.10:8443 check ssl verify required
-```
-
-**Nginx (as reverse proxy):**
-```nginx
-upstream emme {
-    server 192.168.1.10:8443;
-    health_check match=/health/interval=5s;
-}
-```
-
-**AWS ALB:**
-- Health check path: `/health`
-- Protocol: HTTPS
-- Expected: 200 OK
+See [Deployment Guide](docs/DEPLOYMENT.md) for:
+- Systemd service configuration
+- Load balancer integration (HAProxy, Nginx, AWS ALB)
+- Performance tuning
+- TLS configuration
+- Security hardening
 
 ## Documentation
 
-- [Health Check Endpoint](docs/HEALTH_CHECK.md) - Detailed health endpoint documentation
-- [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment instructions - TBD
+- [Health Check Endpoint](docs/HEALTH_CHECK.md) - Health endpoint details
+- [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
 - [Monitoring Setup](docs/MONITORING.md) - Prometheus and Grafana integration - TBD
 
 ## License

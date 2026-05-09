@@ -18,4 +18,12 @@ typedef struct Http2Response {
     char content_type[64];
 } Http2Response;
 
+void h2_response_init(Http2Response *resp);
+void h2_response_set_status(Http2Response *resp, int status_code, const char *status_text);
+void h2_response_add_header(Http2Response *resp, const char *name, const char *value);
+void h2_response_set_body(Http2Response *resp, const char *body, size_t len);
+void h2_response_set_body_len(Http2Response *resp, size_t len);
+void h2_response_set_content_type(Http2Response *resp, const char *content_type);
+void h2_response_finalize(Http2Response *resp);
+
 #endif // HTTP2_RESPONSE_H

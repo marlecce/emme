@@ -8,6 +8,8 @@
 int main(int argc, char **argv) {
     ServerConfig config;
     char *config_path = "config.yaml";
+    const char *env_port = getenv("EMME_PORT");
+    const char *env_log_level = getenv("EMME_LOG_LEVEL");
 
     // allow --config <file>
     for (int i = 1; i < argc; i++) {
@@ -16,9 +18,32 @@ int main(int argc, char **argv) {
         }
     }
 
+    // allow EMME_CONFIG_PATH environment variable
+    const char *env_config = getenv("EMME_CONFIG_PATH");
+    if (env_config) {
+        config_path = (char *)env_config;
+    }
+
     if (load_config(&config, config_path) != 0) {
         fprintf(stderr, "Error loading configuration from %s\n", config_path);
         return 1;
+    }
+
+    // Override config with environment variables
+    if (env_port) {
+        char *endptr;
+        long port = strtol(env_port, &endptr, 10);
+        if (*endptr == '\0' && port > 0 && port <= 65535) {
+            config.port = (int)port;
+        } else {
+            fprintf(stderr, "Warning: Invalid EMME_PORT value '%s', using config value %d\n", 
+                    env_port, config.port);
+        }
+    }
+
+    if (env_log_level) {
+        strncpy(config.log_level, env_log_level, sizeof(config.log_level) - 1);
+        config.log_level[sizeof(config.log_level) - 1] = '\0';
     }
 
     if (log_init(&config.logging) != 0) {
