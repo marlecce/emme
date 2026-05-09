@@ -27,7 +27,7 @@
     </tr>
     <tr>
       <th scope="row">Date:</th>
-      <td>2026-05-09 12:11:54</td>
+      <td>2026-05-09 20:27:12</td>
     </tr>
   </table>
 </div>
@@ -53,9 +53,9 @@
     </tr>
     <tr>
       <th scope="row">Branches:</th>
-      <td>32</td>
+      <td>33</td>
       <td>66</td>
-      <td class="coverage-low">48.5%</td>
+      <td class="coverage-low">50.0%</td>
     </tr>
   </table>
 </div>
@@ -73,9 +73,9 @@
       <th>Call count</th>
       <th>Block coverage</th>
     </tr>
-    <tr><td><a href="#l67">check_rollover (line 67)</a></td><td>called 50 times, returned 50 times</td><td>75.0%</td></tr>
+    <tr><td><a href="#l67">check_rollover (line 67)</a></td><td>called 100 times, returned 100 times</td><td>75.0%</td></tr>
     <tr><td><a href="#l145">log_init (line 145)</a></td><td>called 10 times, returned 10 times</td><td>63.0%</td></tr>
-    <tr><td><a href="#l195">log_message (line 195)</a></td><td>called 50 times, returned 50 times</td><td>64.0%</td></tr>
+    <tr><td><a href="#l195">log_message (line 195)</a></td><td>called 100 times, returned 100 times</td><td>64.0%</td></tr>
     <tr><td><a href="#l224">log_shutdown (line 224)</a></td><td>called 10 times, returned 10 times</td><td>100.0%</td></tr>
     <tr><td><a href="#l96">logger_thread_func (line 96)</a></td><td>called 10 times, returned 10 times</td><td>96.0%</td></tr>
     <tr><td><a href="#l39">rollover_log_file (line 39)</a></td><td>not called</td><td>0.0%</td></tr>
@@ -559,7 +559,7 @@
       <td class="lineno"><a id="l67" href="#l67">67</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="k">static</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">check_rollover</span><span class="p">(</span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">formatted_message</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -569,11 +569,11 @@
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
           <div class="notTakenBranch">&cross; Branch 0 not taken.</div>
-          <div class="takenBranch">&check; Branch 1 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 1 taken 100 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="n">current_config</span><span class="p">.</span><span class="n">appender_flags</span><span class="w"> </span><span class="o">&amp;</span><span class="w"> </span><span class="n">APPENDER_FILE</span><span class="p">))</span></td>
     </tr>
     <tr class="source-line">
@@ -594,14 +594,14 @@
       <td class="lineno"><a id="l71" href="#l71">71</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">do_rollover</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l72" href="#l72">72</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="kt">size_t</span><span class="w"> </span><span class="n">msg_len</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">strlen</span><span class="p">(</span><span class="n">formatted_message</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -624,14 +624,14 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">2/4</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 100 times.</div>
           <div class="notTakenBranch">&cross; Branch 1 not taken.</div>
           <div class="notTakenBranch">&cross; Branch 2 not taken.</div>
-          <div class="takenBranch">&check; Branch 3 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 3 taken 100 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">current_config</span><span class="p">.</span><span class="n">rollover_size</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="p">(</span><span class="n">current_file_size</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">msg_len</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">current_config</span><span class="p">.</span><span class="n">rollover_size</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -661,12 +661,12 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 100 times.</div>
           <div class="notTakenBranch">&cross; Branch 1 not taken.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">current_config</span><span class="p">.</span><span class="n">rollover_daily</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -680,7 +680,7 @@
       <td class="lineno"><a id="l81" href="#l81">81</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">        </span><span class="n">time</span><span class="p">(</span><span class="o">&amp;</span><span class="n">now_t</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -694,14 +694,14 @@
       <td class="lineno"><a id="l83" href="#l83">83</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">        </span><span class="n">localtime_r</span><span class="p">(</span><span class="o">&amp;</span><span class="n">now_t</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">now_tm</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l84" href="#l84">84</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">        </span><span class="n">localtime_r</span><span class="p">(</span><span class="o">&amp;</span><span class="n">last_rollover</span><span class="p">.</span><span class="n">tv_sec</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">last_tm</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -717,14 +717,14 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">2/4</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 100 times.</div>
           <div class="notTakenBranch">&cross; Branch 1 not taken.</div>
           <div class="notTakenBranch">&cross; Branch 2 not taken.</div>
-          <div class="takenBranch">&check; Branch 3 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 3 taken 100 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">now_tm</span><span class="p">.</span><span class="n">tm_yday</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">last_tm</span><span class="p">.</span><span class="n">tm_yday</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="n">now_tm</span><span class="p">.</span><span class="n">tm_year</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">last_tm</span><span class="p">.</span><span class="n">tm_year</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -755,11 +755,11 @@
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
           <div class="notTakenBranch">&cross; Branch 0 not taken.</div>
-          <div class="takenBranch">&check; Branch 1 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 1 taken 100 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">do_rollover</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -822,30 +822,30 @@
       <td class="lineno"><a id="l99" href="#l99">99</a></td>
       <td class="linebranch">
         <details class="linebranchDetails">
-        <summary class="linebranchSummary">3/4</summary>
+        <summary class="linebranchSummary">4/4</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 3163 times.</div>
-          <div class="takenBranch">&check; Branch 1 taken 10 times.</div>
-          <div class="notTakenBranch">&cross; Branch 2 not taken.</div>
+          <div class="takenBranch">&check; Branch 0 taken 3206 times.</div>
+          <div class="takenBranch">&check; Branch 1 taken 30 times.</div>
+          <div class="takenBranch">&check; Branch 2 taken 20 times.</div>
           <div class="takenBranch">&check; Branch 3 taken 10 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">3173</td>
-      <td class="src partialCoveredLine"><span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">atomic_load</span><span class="p">(</span><span class="o">&amp;</span><span class="n">logger_running</span><span class="p">)</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="p">(</span><span class="n">atomic_load</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_head</span><span class="p">)</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">atomic_load</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_tail</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span></td>
+      <td class="linecount coveredLine">3236</td>
+      <td class="src coveredLine"><span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">atomic_load</span><span class="p">(</span><span class="o">&amp;</span><span class="n">logger_running</span><span class="p">)</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="p">(</span><span class="n">atomic_load</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_head</span><span class="p">)</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="n">atomic_load</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_tail</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l100" href="#l100">100</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">3163</td>
+      <td class="linecount coveredLine">3226</td>
       <td class="src coveredLine"><span class="w">        </span><span class="kt">size_t</span><span class="w"> </span><span class="n">tail</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">atomic_load_explicit</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_tail</span><span class="p">,</span><span class="w"> </span><span class="n">memory_order_relaxed</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l101" href="#l101">101</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">3163</td>
+      <td class="linecount coveredLine">3226</td>
       <td class="src coveredLine"><span class="w">        </span><span class="kt">size_t</span><span class="w"> </span><span class="n">head</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">atomic_load_explicit</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_head</span><span class="p">,</span><span class="w"> </span><span class="n">memory_order_acquire</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -854,12 +854,12 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">2/2</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 3113 times.</div>
-          <div class="takenBranch">&check; Branch 1 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 3126 times.</div>
+          <div class="takenBranch">&check; Branch 1 taken 100 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount coveredLine">3163</td>
+      <td class="linecount coveredLine">3226</td>
       <td class="src coveredLine"><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">tail</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">head</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -873,14 +873,14 @@
       <td class="lineno"><a id="l104" href="#l104">104</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">3113</td>
+      <td class="linecount coveredLine">3126</td>
       <td class="src coveredLine"><span class="w">            </span><span class="n">usleep</span><span class="p">(</span><span class="mi">1000</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l105" href="#l105">105</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">3113</td>
+      <td class="linecount coveredLine">3126</td>
       <td class="src coveredLine"><span class="w">            </span><span class="k">continue</span><span class="p">;</span></td>
     </tr>
     <tr class="source-line">
@@ -894,7 +894,7 @@
       <td class="lineno"><a id="l107" href="#l107">107</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">        </span><span class="n">LogEntry</span><span class="w"> </span><span class="n">entry</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">log_buffer</span><span class="p">[</span><span class="n">tail</span><span class="w"> </span><span class="o">%</span><span class="w"> </span><span class="n">log_buffer_size</span><span class="p">];</span></td>
     </tr>
     <tr class="source-line">
@@ -929,14 +929,14 @@
       <td class="lineno"><a id="l112" href="#l112">112</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">        </span><span class="n">localtime_r</span><span class="p">(</span><span class="o">&amp;</span><span class="p">(</span><span class="n">entry</span><span class="p">.</span><span class="n">timestamp</span><span class="p">.</span><span class="n">tv_sec</span><span class="p">),</span><span class="w"> </span><span class="o">&amp;</span><span class="n">tm_info</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l113" href="#l113">113</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">        </span><span class="n">strftime</span><span class="p">(</span><span class="n">timebuf</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">timebuf</span><span class="p">),</span><span class="w"> </span><span class="s">&quot;%Y-%m-%d %H:%M:%S&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">tm_info</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -966,19 +966,19 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 100 times.</div>
           <div class="notTakenBranch">&cross; Branch 1 not taken.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">current_config</span><span class="p">.</span><span class="n">format</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">LOG_FORMAT_PLAIN</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l118" href="#l118">118</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">            </span><span class="n">snprintf</span><span class="p">(</span><span class="n">formatted_message</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">formatted_message</span><span class="p">),</span></td>
     </tr>
     <tr class="source-line">
@@ -992,7 +992,7 @@
       <td class="lineno"><a id="l120" href="#l120">120</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">                     </span><span class="n">timebuf</span><span class="p">,</span><span class="w"> </span><span class="n">entry</span><span class="p">.</span><span class="n">timestamp</span><span class="p">.</span><span class="n">tv_nsec</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">1000000</span><span class="p">,</span><span class="w"> </span><span class="n">entry</span><span class="p">.</span><span class="n">level</span><span class="p">,</span><span class="w"> </span><span class="n">entry</span><span class="p">.</span><span class="n">message</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -1050,19 +1050,19 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 100 times.</div>
           <div class="notTakenBranch">&cross; Branch 1 not taken.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">current_config</span><span class="p">.</span><span class="n">appender_flags</span><span class="w"> </span><span class="o">&amp;</span><span class="w"> </span><span class="n">APPENDER_FILE</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l129" href="#l129">129</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">            </span><span class="n">check_rollover</span><span class="p">(</span><span class="n">formatted_message</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -1071,33 +1071,33 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 100 times.</div>
           <div class="notTakenBranch">&cross; Branch 1 not taken.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">log_fp</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l131" href="#l131">131</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">                </span><span class="n">fputs</span><span class="p">(</span><span class="n">formatted_message</span><span class="p">,</span><span class="w"> </span><span class="n">log_fp</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l132" href="#l132">132</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">                </span><span class="n">fflush</span><span class="p">(</span><span class="n">log_fp</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l133" href="#l133">133</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">                </span><span class="n">current_file_size</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">strlen</span><span class="p">(</span><span class="n">formatted_message</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -1120,19 +1120,19 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 100 times.</div>
           <div class="notTakenBranch">&cross; Branch 1 not taken.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">current_config</span><span class="p">.</span><span class="n">appender_flags</span><span class="w"> </span><span class="o">&amp;</span><span class="w"> </span><span class="n">APPENDER_CONSOLE</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l137" href="#l137">137</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">            </span><span class="n">fputs</span><span class="p">(</span><span class="n">formatted_message</span><span class="p">,</span><span class="w"> </span><span class="n">stdout</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -1146,7 +1146,7 @@
       <td class="lineno"><a id="l139" href="#l139">139</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">        </span><span class="n">atomic_fetch_add</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_tail</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -1603,7 +1603,7 @@
       <td class="lineno"><a id="l195" href="#l195">195</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="kt">void</span><span class="w"> </span><span class="nf">log_message</span><span class="p">(</span><span class="n">LogLevel</span><span class="w"> </span><span class="n">level</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="w"> </span><span class="o">*</span><span class="n">format</span><span class="p">,</span><span class="w"> </span><span class="p">...)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -1612,14 +1612,14 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">2/4</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 100 times.</div>
           <div class="notTakenBranch">&cross; Branch 1 not taken.</div>
           <div class="notTakenBranch">&cross; Branch 2 not taken.</div>
-          <div class="takenBranch">&check; Branch 3 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 3 taken 100 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">log_buffer</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">!</span><span class="n">atomic_load</span><span class="p">(</span><span class="o">&amp;</span><span class="n">logger_running</span><span class="p">))</span></td>
     </tr>
     <tr class="source-line">
@@ -1636,11 +1636,11 @@
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
           <div class="notTakenBranch">&cross; Branch 0 not taken.</div>
-          <div class="takenBranch">&check; Branch 1 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 1 taken 100 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">level</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">current_config</span><span class="p">.</span><span class="n">level</span><span class="p">)</span></td>
     </tr>
     <tr class="source-line">
@@ -1661,21 +1661,21 @@
       <td class="lineno"><a id="l201" href="#l201">201</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">pthread_mutex_lock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_lock</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l202" href="#l202">202</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="kt">size_t</span><span class="w"> </span><span class="n">head</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">atomic_load_explicit</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_head</span><span class="p">,</span><span class="w"> </span><span class="n">memory_order_relaxed</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l203" href="#l203">203</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="kt">size_t</span><span class="w"> </span><span class="n">tail</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">atomic_load_explicit</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_tail</span><span class="p">,</span><span class="w"> </span><span class="n">memory_order_relaxed</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -1692,11 +1692,11 @@
         <summary class="linebranchSummary">1/2</summary>
         <div class="linebranchContents">
           <div class="notTakenBranch">&cross; Branch 0 not taken.</div>
-          <div class="takenBranch">&check; Branch 1 taken 50 times.</div>
+          <div class="takenBranch">&check; Branch 1 taken 100 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">50</td>
+      <td class="linecount partialCoveredLine">100</td>
       <td class="src partialCoveredLine"><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">head</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">tail</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">log_buffer_size</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -1731,21 +1731,21 @@
       <td class="lineno"><a id="l210" href="#l210">210</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">LogEntry</span><span class="w"> </span><span class="o">*</span><span class="n">entry</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">log_buffer</span><span class="p">[</span><span class="n">head</span><span class="w"> </span><span class="o">%</span><span class="w"> </span><span class="n">log_buffer_size</span><span class="p">];</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l211" href="#l211">211</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">entry</span><span class="o">-&gt;</span><span class="n">level</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">level</span><span class="p">;</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l212" href="#l212">212</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">clock_gettime</span><span class="p">(</span><span class="n">CLOCK_REALTIME</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">entry</span><span class="o">-&gt;</span><span class="n">timestamp</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -1766,21 +1766,21 @@
       <td class="lineno"><a id="l215" href="#l215">215</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">va_start</span><span class="p">(</span><span class="n">args</span><span class="p">,</span><span class="w"> </span><span class="n">format</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l216" href="#l216">216</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">vsnprintf</span><span class="p">(</span><span class="n">entry</span><span class="o">-&gt;</span><span class="n">message</span><span class="p">,</span><span class="w"> </span><span class="n">MAX_LOG_ENTRY_SIZE</span><span class="p">,</span><span class="w"> </span><span class="n">format</span><span class="p">,</span><span class="w"> </span><span class="n">args</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l217" href="#l217">217</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">va_end</span><span class="p">(</span><span class="n">args</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -1794,14 +1794,14 @@
       <td class="lineno"><a id="l219" href="#l219">219</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">atomic_store_explicit</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_head</span><span class="p">,</span><span class="w"> </span><span class="n">head</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">memory_order_release</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l220" href="#l220">220</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">50</td>
+      <td class="linecount coveredLine">100</td>
       <td class="src coveredLine"><span class="w">    </span><span class="n">pthread_mutex_unlock</span><span class="p">(</span><span class="o">&amp;</span><span class="n">log_lock</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
