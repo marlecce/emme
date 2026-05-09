@@ -19,6 +19,9 @@ typedef struct {
 typedef struct {
     char certificate[256];
     char private_key[256];
+    char session_ticket_key[256];
+    int session_cache_size;
+    int session_timeout;
 } SSLConfig;
 
 typedef struct {

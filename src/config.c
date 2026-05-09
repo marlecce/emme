@@ -41,6 +41,9 @@ static void set_config_defaults(ServerConfig *config)
 
     snprintf(config->ssl.certificate, sizeof(config->ssl.certificate), "certs/dev.crt");
     snprintf(config->ssl.private_key, sizeof(config->ssl.private_key), "certs/dev.key");
+    config->ssl.session_cache_size = 100000;
+    config->ssl.session_timeout = 300;
+    config->ssl.session_ticket_key[0] = '\0';
 }
 
 static int get_yaml_string(yaml_node_t *node, const char *field, char *buffer, size_t size)
@@ -400,6 +403,24 @@ int load_config(ServerConfig *config, const char *file_path)
         if (key_node &&
             get_yaml_string(key_node, "ssl.private_key",
                             config->ssl.private_key, sizeof(config->ssl.private_key)) != 0)
+            goto cleanup;
+
+        yaml_node_t *cache_size_node = find_yaml_node(&document, node, "session_cache_size");
+        if (cache_size_node &&
+            get_yaml_int_in_range(cache_size_node, "ssl.session_cache_size", 1000, 1000000,
+                                  &config->ssl.session_cache_size) != 0)
+            goto cleanup;
+
+        yaml_node_t *timeout_node = find_yaml_node(&document, node, "session_timeout");
+        if (timeout_node &&
+            get_yaml_int_in_range(timeout_node, "ssl.session_timeout", 60, 3600,
+                                  &config->ssl.session_timeout) != 0)
+            goto cleanup;
+
+        yaml_node_t *ticket_key_node = find_yaml_node(&document, node, "session_ticket_key");
+        if (ticket_key_node &&
+            get_yaml_string(ticket_key_node, "ssl.session_ticket_key",
+                            config->ssl.session_ticket_key, sizeof(config->ssl.session_ticket_key)) != 0)
             goto cleanup;
     }
 

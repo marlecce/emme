@@ -9,9 +9,10 @@
 #include <fcntl.h>
 #include <liburing.h>
 #include <sys/sendfile.h>
-#include <sys/time.h>  // for instrumentation
+#include <sys/time.h>
 #include <signal.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include "config.h"
 #include "server.h"
 #include "http_parser.h"
@@ -248,9 +249,12 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
 }
 
 SSL_CTX *ssl_ctx = NULL;
-static struct io_uring global_ring;  // Global io_uring instance for the accept loop.
+static struct io_uring global_ring;
 static volatile sig_atomic_t g_shutdown = 0;
 static int g_server_fd = -1;
+static _Atomic size_t g_in_flight_requests = 0;
+static struct timespec g_shutdown_deadline;
+static _Atomic int g_shutdown_deadline_set = 0;
 
 static void log_io_uring_error(const char *context, int ret)
 {
@@ -260,9 +264,18 @@ static void log_io_uring_error(const char *context, int ret)
 static void handle_signal(int sig)
 {
     (void)sig;
-    g_shutdown = 1;
-    if (g_server_fd >= 0)
-        close(g_server_fd);
+    if (!atomic_exchange(&g_shutdown, 1)) {
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        g_shutdown_deadline.tv_sec = now.tv_sec + 30;
+        g_shutdown_deadline.tv_nsec = now.tv_nsec;
+        atomic_store(&g_shutdown_deadline_set, 1);
+        log_message(LOG_LEVEL_INFO, "Graceful shutdown initiated (SIGTERM/SIGINT). Draining %zu in-flight requests with 30s timeout",
+                    atomic_load(&g_in_flight_requests));
+    }
+    if (g_server_fd >= 0) {
+        shutdown(g_server_fd, SHUT_RD);
+    }
 }
 
 static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *config, struct io_uring *ring);
@@ -586,6 +599,7 @@ void client_task(void *arg)
             }
             close(data->client_fd);
             free(data);
+            atomic_fetch_sub(&g_in_flight_requests, 1);
             return;
         }
     }
@@ -594,6 +608,7 @@ void client_task(void *arg)
     free(local_ring);
     local_ring = NULL;
     free(data);
+    atomic_fetch_sub(&g_in_flight_requests, 1);
 }
 
 /* Main per-connection handler; performs nonblocking TLS handshake before dispatching via ALPN */
@@ -691,7 +706,7 @@ int start_server(ServerConfig *config)
         io_uring_queue_exit(&global_ring);
         return -1;
     }
-    ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key);
+    ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key, config);
     if (!ssl_ctx)
     {
         close(server_fd);
@@ -712,8 +727,17 @@ int start_server(ServerConfig *config)
         return -1;
     }
     printf("Emme listening on port %d...\n", config->port);
+    
+    time_t last_stats_log = time(NULL);
     while (!g_shutdown)
     {
+        time_t now = time(NULL);
+        if (now - last_stats_log > 60)
+        {
+            log_session_stats(ssl_ctx);
+            last_stats_log = now;
+        }
+        
         struct io_uring_sqe *sqe = io_uring_get_sqe(&global_ring);
         socklen_t client_len = sizeof(client_addr);
 
@@ -764,9 +788,11 @@ int start_server(ServerConfig *config)
         }
         task_data->client_fd = client_fd;
         task_data->config = config;
+        atomic_fetch_add(&g_in_flight_requests, 1);
         if (!thread_pool_add_task(pool, client_task, task_data))
         {
             fprintf(stderr, "Failed to add task to thread pool\n");
+            atomic_fetch_sub(&g_in_flight_requests, 1);
             free(task_data);
             close(client_fd);
         }
@@ -774,6 +800,32 @@ int start_server(ServerConfig *config)
     thread_pool_destroy(pool);
     close(server_fd);
     g_server_fd = -1;
+    
+    if (atomic_load(&g_shutdown_deadline_set)) {
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        
+        while (atomic_load(&g_in_flight_requests) > 0) {
+            if (now.tv_sec > g_shutdown_deadline.tv_sec ||
+                (now.tv_sec == g_shutdown_deadline.tv_sec && 
+                 now.tv_nsec > g_shutdown_deadline.tv_nsec)) {
+                log_message(LOG_LEVEL_WARN, "Graceful shutdown timeout reached. Forcing shutdown with %zu in-flight requests",
+                            atomic_load(&g_in_flight_requests));
+                break;
+            }
+            
+            log_message(LOG_LEVEL_INFO, "Waiting for %zu in-flight requests to complete...",
+                        atomic_load(&g_in_flight_requests));
+            struct timespec sleep_time = {.tv_sec = 0, .tv_nsec = 100000000};
+            nanosleep(&sleep_time, NULL);
+            clock_gettime(CLOCK_REALTIME, &now);
+        }
+        
+        if (atomic_load(&g_in_flight_requests) == 0) {
+            log_message(LOG_LEVEL_INFO, "Graceful shutdown complete. All requests drained.");
+        }
+    }
+    
     io_uring_queue_exit(&global_ring);
     cleanup_ssl_context(ssl_ctx);
     return 0;
