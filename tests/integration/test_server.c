@@ -314,3 +314,105 @@ Test(https_blackbox, headers_too_large_431)
     SSL_free(ssl);
     SSL_CTX_free(ctx);
 }
+
+Test(https_blackbox, health_endpoint_healthy)
+{
+    launch_server();
+
+    SSL_CTX *ctx = make_client_ctx();
+    SSL *ssl = connect_ssl(ctx);
+
+    const char *req =
+        "GET /health HTTP/1.1\r\n"
+        "Host: localhost\r\n\r\n";
+    cr_assert_eq(ssl_write_all(ssl, req, strlen(req)), 0, "write");
+
+    char buf[4096];
+    int total = 0;
+    int header_end = -1;
+    int content_length = 15;
+
+    while (total < (int)(sizeof(buf) - 1)) {
+        int n = SSL_read(ssl, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0) break;
+        total += n;
+        buf[total] = '\0';
+
+        if (header_end < 0) {
+            char *p = strstr(buf, "\r\n\r\n");
+            if (p) {
+                header_end = p - buf + 4;
+            }
+        }
+
+        if (header_end > 0 && total >= header_end + content_length)
+            break;
+    }
+
+    cr_assert_gt(total, 0, "read");
+    buf[total] = '\0';
+    cr_assert(strstr(buf, "HTTP/1.1 200 OK"),
+              "Expected 200 OK, got:\n%s", buf);
+    cr_assert(strstr(buf, "{\"status\":\"ok\"}"),
+              "Expected JSON body, got:\n%s", buf);
+
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+}
+
+Test(https_blackbox, health_endpoint_json_format)
+{
+    launch_server();
+
+    SSL_CTX *ctx = make_client_ctx();
+    SSL *ssl = connect_ssl(ctx);
+
+    const char *req =
+        "GET /health HTTP/1.1\r\n"
+        "Host: localhost\r\n\r\n";
+    cr_assert_eq(ssl_write_all(ssl, req, strlen(req)), 0, "write");
+
+    char buf[4096];
+    int total = 0;
+    int content_length = -1;
+    int header_end = -1;
+
+    while (total < (int)(sizeof(buf) - 1)) {
+        int n = SSL_read(ssl, buf + total, sizeof(buf) - 1 - total);
+        if (n <= 0) break;
+        total += n;
+        buf[total] = '\0';
+
+        if (header_end < 0) {
+            char *p = strstr(buf, "\r\n\r\n");
+            if (p) {
+                header_end = p - buf + 4;
+                char *cl = strstr(buf, "Content-Length:");
+                if (cl) {
+                    sscanf(cl, "Content-Length: %d", &content_length);
+                }
+            }
+        }
+
+        if (header_end > 0 && content_length >= 0 && 
+            total >= (size_t)(header_end + content_length))
+            break;
+    }
+
+    cr_assert_gt(total, 0, "read");
+    buf[total] = '\0';
+    
+    char *json_start = strstr(buf, "{");
+    cr_assert_not_null(json_start, "Expected JSON body");
+    
+    char *body = json_start;
+    cr_assert(strstr(body, "\"status\":\"ok\""), "Expected status:ok");
+    
+    cr_assert(strstr(buf, "Content-Type: application/json"),
+              "Expected JSON content type, got:\n%s", buf);
+
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+}

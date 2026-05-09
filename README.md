@@ -5,33 +5,47 @@ This project implements a high-performance web server in C that aims to outperfo
 ## Features
 
 - **Asynchronous I/O with io_uring:** Efficiently handles I/O operations without blocking.
-- **Custom Thread Pool:** Manages concurrent client connections.
+- **Custom Thread Pool:** Manages concurrent client connections with dynamic scaling.
 - **Optimized HTTP Parsing:** Minimalist in-place HTTP parser for fast request handling.
+- **HTTP/2 Support:** Full HTTP/2 protocol support via nghttp2 with ALPN negotiation.
 - **Advanced Logging Module:**
   - **Asynchronous Logging:** Uses a lock-free ring buffer and a dedicated logging thread to minimize performance impact.
   - **Configurable Log Output:** Supports multiple appenders (e.g., file and console) via an array-based configuration.
   - **Log Rollover:** Rollover based on file size or daily rotation.
+- **Health Check Endpoint:** Built-in `/health` endpoint for monitoring and load balancer integration.
 - **Configurable:** Loads settings from a YAML configuration file.
 - **HTTPS by Default:**
   - **TLS Termination:** The server terminates TLS connections using OpenSSL.
   - **SSL/TLS Configuration:** Certificate and private key settings are loaded from the configuration file.
+  - **TLS 1.2/1.3 Support:** Modern TLS versions with strong cipher suites.
+  - **Session Resumption:** TLS session caching for faster handshakes.
   - **Self-Signed Certificate for Development:** A script is provided to generate a self-signed certificate for development and testing.
   - **Production Guidance:** Clear instructions on obtaining and configuring a certificate from a trusted CA for production use.
 
 ## Project Structure
 
+```
+src/              # Implementation files (*.c)
+include/          # Headers (*.h)
+tests/
+  unit/           # Pure logic, parser, config edge cases
+  integration/    # TLS, routing, static serving, HTTP/2
+  e2e/            # Full stack verification
+config.yaml       # Runtime configuration (dev defaults)
+certs/            # Development TLS certificates
+scripts/          # Build and deployment helpers
+docs/             # Documentation
+```
+
+**Core Modules:**
 - **src/main.c**: Entry point that loads configuration, initializes the logger, and starts the server.
 - **src/server.c**: Main server logic including the event loop using io_uring, connection handling, and TLS handshake.
 - **src/http_parser.c / include/http_parser.h**: Custom HTTP parser implementation.
 - **src/config.c / include/config.h**: Configuration file loader for server settings (including logging and SSL configuration).
-- **src/advanced_log.c / include/advanced_log.h**: Advanced logging module implementation.
-- **include/logging_common.h**: Shared logging definitions (log levels, formats, and the LoggingConfig structure).
+- **src/log.c / include/log.h**: Advanced logging module with async ring buffer.
 - **src/tls.c / include/tls.h**: TLS module using OpenSSL to create and manage the SSL context.
-- **Tests**:  
-  - **tests/test_http_parser.c**: Unit tests for the HTTP parser.
-  - Additional tests (e.g., test_config, test_server) can be added.
-- **config.yaml**: Sample configuration file.
-- **scripts/generate_cert.sh**: Shell script to generate a self-signed certificate for development.
+- **src/router.c / include/router.h**: Request routing (static files, reverse proxy).
+- **src/thread_pool.c / include/thread_pool.h**: Dynamic thread pool with work stealing.
 
 ## Configuration
 
@@ -135,11 +149,44 @@ Start the server by running:
 ./emme
 ```
 
+Or with a custom configuration file:
+
+```bash
+./emme --config /path/to/config.yaml
+```
+
 The server will listen on the configured HTTPS port (e.g., 8443) and handle incoming HTTPS requests. Use a browser or tool like curl to test:
 
 ```bash
 curl -vk https://localhost:8443
 ```
+
+### Health Check
+
+Monitor server health with the built-in `/health` endpoint:
+
+```bash
+curl -vk https://localhost:8443/health
+```
+
+Response:
+```json
+{"status":"ok"}
+```
+
+### Environment Variables
+
+Override configuration with environment variables:
+
+```bash
+EMME_PORT=9443 EMME_LOG_LEVEL=debug ./emme
+```
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `EMME_CONFIG_PATH` | Path to config.yaml | `config.yaml` |
+| `EMME_PORT` | Server port | From config |
+| `EMME_LOG_LEVEL` | Log level | From config |
 
 ## Performance tests
 
@@ -157,3 +204,79 @@ act -j ubuntu-build
 ## Coverage
 
 The coverage is available [here](https://marlecce.github.io/emme/)
+
+## Testing
+
+Run the full test suite:
+
+```bash
+make test
+```
+
+Run with coverage instrumentation:
+
+```bash
+make COVERAGE=1
+make coverage
+```
+
+View the coverage report:
+
+```bash
+# Text summary
+cat coverage/summary.txt
+
+# HTML report
+open coverage/index.html
+```
+
+## Production Deployment
+
+### Bare Metal / VM Deployment
+
+For maximum performance, deploy directly on bare metal or cloud VMs:
+
+```bash
+# Systemd service example
+sudo cp emme /usr/local/bin/
+sudo cp emme.service /etc/systemd/system/
+sudo systemctl enable emme
+sudo systemctl start emme
+```
+
+### Health Check Integration
+
+**HAProxy:**
+```haproxy
+backend emme_servers
+    option httpchk GET /health
+    http-check expect status 200
+    server emme1 192.168.1.10:8443 check ssl verify required
+```
+
+**Nginx (as reverse proxy):**
+```nginx
+upstream emme {
+    server 192.168.1.10:8443;
+    health_check match=/health/interval=5s;
+}
+```
+
+**AWS ALB:**
+- Health check path: `/health`
+- Protocol: HTTPS
+- Expected: 200 OK
+
+## Documentation
+
+- [Health Check Endpoint](docs/HEALTH_CHECK.md) - Detailed health endpoint documentation
+- [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment instructions - TBD
+- [Monitoring Setup](docs/MONITORING.md) - Prometheus and Grafana integration - TBD
+
+## License
+
+TBD
+
+## Contributing
+
+TBD

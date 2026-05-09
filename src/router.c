@@ -24,6 +24,8 @@
 #include "router.h"
 #include "server.h"
 
+static int ssl_write_all(SSL *ssl, const char *buf, size_t len);
+
 typedef enum {
     STATIC_LOOKUP_ERROR = -1,
     STATIC_LOOKUP_NO_ROUTE = 0,
@@ -31,6 +33,48 @@ typedef enum {
     STATIC_LOOKUP_NOT_FOUND = 2,
     STATIC_LOOKUP_FORBIDDEN = 3,
 } StaticLookupResult;
+
+static int send_health_response(SSL *ssl, Http2Response *h2resp)
+{
+    const char *body = "{\"status\":\"ok\"}";
+    size_t body_len = strlen(body);
+    
+    if (h2resp) {
+        /* HTTP/2 response */
+        h2resp->status_code = 200;
+        snprintf(h2resp->status_text, sizeof(h2resp->status_text), "OK");
+        snprintf(h2resp->content_type, sizeof(h2resp->content_type), "application/json");
+        memcpy(h2resp->body, body, body_len);
+        h2resp->body[body_len] = '\0';
+        h2resp->body_len = body_len;
+        h2resp->num_headers = 0;
+        return 0;
+    } else {
+        /* HTTP/1.1 response */
+        char header[256];
+        int header_len = snprintf(header, sizeof(header),
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %zu\r\n"
+            "\r\n", body_len);
+        
+        if (header_len < 0 || (size_t)header_len >= sizeof(header))
+            return -1;
+        
+        if (ssl_write_all(ssl, header, header_len) != 0)
+            return -1;
+        
+        if (ssl_write_all(ssl, body, body_len) != 0)
+            return -1;
+        
+        return 0;
+    }
+}
+
+static int is_health_check(const HttpRequest *req)
+{
+    return (strcmp(req->path, "/health") == 0);
+}
 
 static int ssl_write_all(SSL *ssl, const char *buf, size_t len)
 {
@@ -434,6 +478,11 @@ int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerC
 
     if (!req || !req->path)
         return -1;
+
+    /* Health check endpoint - highest priority */
+    if (is_health_check(req)) {
+        return send_health_response(ssl, h2resp);
+    }
 
     if (h2resp)
     {

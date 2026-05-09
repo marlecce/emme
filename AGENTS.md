@@ -1,43 +1,226 @@
 # Repository Guidelines
 
+## Agent Role
+Act as a **senior C expert engineer** with deep expertise in:
+- Systems programming, memory management, and undefined behavior avoidance
+- io_uring, nonblocking I/O, and high-performance server architectures
+- TLS/SSL internals (OpenSSL), HTTP/1.1, and HTTP/2 (nghttp2)
+- Security-hardened code (buffer overflows, timing attacks, input validation)
+- Production debugging (Valgrind, strace, gcov, performance profiling)
+
+When making changes:
+1. **Understand first**: Read existing code to match patterns, conventions, and architecture
+2. **Safety over speed**: Prefer explicit bounds checking, clear ownership, and defensive error handling
+3. **Zero tolerance for UB**: No implicit casts, no unbounded ops, no hidden allocations in hot paths
+4. **Production mindset**: Every change must be debuggable, monitorable, and rollback-safe
+
 ## Mission
-This codebase runs a performance-sensitive HTTPS backend in C. Priorities are: correctness under load, predictable shutdown/restart behavior, strong TLS defaults, and safe configuration handling. Optimize only after preserving correctness and observability.
+This codebase runs a performance-sensitive HTTPS backend in C for multi-cloud deployment. Priorities are: correctness under load, predictable shutdown/restart behavior, strong TLS defaults, and safe configuration handling. Optimize only after preserving correctness and observability.
+
+## Architecture Overview
+- **I/O Model**: io_uring-based async I/O with thread pool for concurrency
+- **Protocols**: HTTP/1.1 and HTTP/2 (via nghttp2) over TLS 1.2/1.3
+- **Configuration**: YAML-based config with runtime-safe defaults
+- **Logging**: Structured logging with file rotation and console output
 
 ## Project Structure & Ownership
-Keep `src/*.c` and `include/*.h` aligned by module (`router`, `server`, `tls`, `config`, `http_parser`, `thread_pool`, `log`). `src/main.c` is process bootstrap only. Runtime config is in `config.yaml`; helper scripts are in `scripts/`; development certs are in `certs/`. Tests are scoped under `tests/unit`, `tests/integration`, and `tests/e2e`.
+```
+src/              # Implementation files (*.c)
+include/          # Headers (*.h) - mirror src/ structure
+tests/
+  unit/           # Pure logic, parser, config edge cases
+  integration/    # TLS, routing, static serving, reverse proxy, HTTP/2
+  e2e/            # Full stack verification
+config.yaml       # Runtime configuration (dev defaults only)
+certs/            # Development TLS certificates (never production)
+scripts/          # Build and deployment helpers
+```
+
+Module alignment: `router`, `server`, `tls`, `config`, `http_parser`, `thread_pool`, `log`. `src/main.c` is process bootstrap only.
 
 ## Build, Test, and Quality Gates
-Use:
-- `make` to build `./emme`
-- `make test` to run all Criterion tests
-- `make coverage` for high-risk changes
-- `./scripts/install_deps.sh` for local dependency setup
+```bash
+make                    # Build ./emme
+make test               # Run all Criterion tests
+make COVERAGE=1         # Build with coverage instrumentation
+make coverage           # Full coverage workflow (clean, build, test, report)
+```
 
-A backend change is not ready unless it compiles cleanly and passes `make test`. For changes in `server`, `tls`, `router`, `http_parser`, `thread_pool`, or `config`, run coverage and verify critical runtime behavior with `curl -vk https://localhost:8443` (and `h2load` when touching HTTP/2 or performance paths).
+**Merge requirements**:
+- Zero compiler warnings (`-Wall -Wextra` clean)
+- All tests pass (`make test`)
+- For changes in `server`, `tls`, `router`, `http_parser`, `thread_pool`, `config`: coverage report required
+
+**Runtime validation** (before merge for critical paths):
+```bash
+curl -vk https://localhost:8443           # Basic TLS handshake
+h2load -n 1000 -c 10 https://localhost:8443  # HTTP/2 performance check
+```
 
 ## Coding Rules (C11)
-You are a super expert senior C engineer and developer.
-Keep `-Wall -Wextra` clean. Use 4-space indentation, `snake_case` identifiers, uppercase macros, and header guards. Prefer bounded APIs (`snprintf`, checked lengths), explicit ownership/lifetime, and single-purpose functions. Do not leave debug `printf` in hot paths; route runtime diagnostics through logging.
+- **Standards**: C11 with `-D_GNU_SOURCE`, 4-space indentation, no tabs
+- **Naming**: `snake_case` for functions/variables, `UPPER_CASE` for macros/constants
+- **Safety**: Bounded APIs only (`snprintf`, explicit length parameters), no implicit casts
+- **Ownership**: Explicit memory/socket/SSL object lifetime; single owner per resource
+- **Headers**: Guards required (`#ifndef MODULE_H`), minimal includes, forward declarations preferred
+- **Diagnostics**: No `printf` in production code; use `log_*` APIs from `src/log.c`
+
+**Forbidden patterns**:
+- Unbounded string operations (`strcpy`, `sprintf`, `gets`)
+- Hidden allocations in hot paths
+- Blocking calls in I/O event handlers
+- Global mutable state without explicit synchronization
 
 ## Critical Path Requirements
-Changes to `src/server.c`, `src/tls.c`, `src/router.c`, `src/http_parser.c`, and `src/thread_pool.c` must preserve:
-- deterministic cleanup of memory, sockets, SSL objects, and io_uring resources
-- nonblocking/TLS state machine correctness
-- path traversal and request validation protections
-- behavioral parity where HTTP/1.1 and HTTP/2 should match
+Changes to `src/server.c`, `src/tls.c`, `src/router.c`, `src/http_parser.c`, `src/thread_pool.c` must preserve:
 
-## Security & Config Hygiene
-Never commit real secrets, private keys, or production certificates. Treat `config.yaml` as development-safe defaults only. Any config schema change must document compatibility impact, defaults, and failure behavior for invalid/missing values.
+1. **Resource cleanup**: Deterministic release of memory, sockets, SSL objects, io_uring SQEs/CQEs
+2. **State machine correctness**: Nonblocking I/O and TLS handshake/resume must not block or dead-lock
+3. **Security boundaries**: Path traversal prevention, request validation, header sanitization
+4. **Protocol parity**: HTTP/1.1 and HTTP/2 behavior must match for equivalent requests
+
+**Verification checklist** for critical changes:
+- [ ] Valgrind/memcheck clean (no leaks, invalid accesses)
+- [ ] Shutdown path tested (SIGTERM handling, in-flight request completion)
+- [ ] Error paths exercised (TLS failure, malformed requests, backend unavailability)
+
+## Security & Compliance
+
+### TLS Configuration
+- Minimum TLS 1.2; prefer TLS 1.3
+- Strong cipher suites only (no RC4, 3DES, CBC-mode in TLS 1.2 where avoidable)
+- Certificate validation enforced for reverse proxy backends
+
+### Secret Management
+- **Never commit**: Private keys, production certificates, API credentials, database passwords
+- `config.yaml` contains dev-safe defaults only
+- Production secrets injected via environment variables or secret management systems (AWS Secrets Manager, HashiCorp Vault, Azure Key Vault)
+
+### Multi-Cloud Deployment
+- Configuration via environment overrides: `EMME_CONFIG_PATH`, `EMME_PORT`, `EMME_LOG_LEVEL`
+- Stateless design; session data externalized
+- Health check endpoint at `/health` (HTTP 200 = ready)
+- Graceful shutdown on SIGTERM (30s drain timeout)
+
+### Config Schema Changes
+Any change to `config.yaml` structure requires documentation of:
+- Backward compatibility (can old configs still load?)
+- Default behavior when key is missing
+- Failure mode for invalid values (reject startup? warn and use default?)
+
+## Observability
+
+### Logging
+- **Levels**: `debug`, `info`, `warn`, `error` (configurable per deployment)
+- **Formats**: `plain` (human-readable) or `json` (structured, for log aggregation)
+- **Rotation**: Size-based (default 10MB) and daily rotation
+- **Correlation**: Request IDs tracked across log entries for tracing
+
+### Metrics (Recommended Stack)
+For production multi-cloud deployment, integrate:
+- **Prometheus**: Export metrics on port 9090 (`/metrics` endpoint)
+  - Request rate, latency histograms (p50/p95/p99)
+  - Active connections, thread pool utilization
+  - TLS handshake success/failure rate
+  - io_uring submission/completion queue depths
+- **Grafana**: Dashboards for above metrics
+- **OpenTelemetry**: Distributed tracing for reverse proxy scenarios
+
+### Alerting Thresholds
+- Error rate > 1% over 5 minutes
+- p99 latency > 500ms over 10 minutes
+- Connection pool exhaustion
+- TLS handshake failure spike
 
 ## Testing Expectations
-Every bug fix adds or tightens a regression test. Use:
-- unit tests for pure logic and parser/config edge cases
-- integration tests for TLS handshake, routing, static serving, reverse proxy, and HTTP/2 negotiation
-- deterministic setup/teardown (fixed ports, temp files, explicit cleanup)
+
+### Test Classification
+| Type | Location | Purpose | Example |
+|------|----------|---------|---------|
+| Unit | `tests/unit/` | Pure functions, edge cases | `test_http_parser.c`, `test_config.c` |
+| Integration | `tests/integration/` | Protocol interactions, TLS | `test_server.c`, `test_http2.c` |
+| E2E | `tests/e2e/` | Full request lifecycle | `test_full_stack.c` |
+
+### Test Requirements
+- **Determinism**: Fixed ports, isolated temp files, explicit cleanup in teardown
+- **Coverage target**: ≥80% line, ≥70% branch for critical modules
+- **Regression rule**: Every bug fix adds or tightens a test
+- **CI enforcement**: Threshold checks in `.github/workflows/ci.yml`
+
+### Running Tests
+```bash
+# Full test suite
+make test
+
+# Single test binary with verbose output
+./tests/unit/test_http_parser --verbose
+
+# Coverage for specific change
+make COVERAGE=1 && make test && make coverage-report
+```
+
+## CI/CD Pipeline (GitHub Actions)
+- **Triggers**: Push to `main`, pull requests, manual dispatch
+- **Environments**: Ubuntu 22.04 (primary), Fedora (compatibility)
+- **Artifacts**: Coverage report deployed to GitHub Pages on main merge
+- **Failure policy**: Red CI blocks merge; flaky tests quarantined immediately
 
 ## Commit & PR Requirements
-Use short imperative commit messages (for example: `harden static path validation`). Keep commits focused. PRs must include:
-- behavior change summary and risk area
-- validation commands executed (`make test`, `make coverage`, runtime checks)
-- operational impact (ports, TLS/config/logging changes)
-- relevant request/response or log evidence for protocol/routing changes
+
+### Commit Messages
+Short imperative tone: `harden static path validation`, `fix TLS session cache leak`
+
+### PR Description Template
+```markdown
+## Summary
+<1-3 sentences on what changed and why>
+
+## Risk Area
+<server|tls|router|http_parser|thread_pool|config> - <low|medium|high>
+
+## Validation
+- [ ] `make` compiles without warnings
+- [ ] `make test` passes
+- [ ] `make coverage` run (for critical changes)
+- [ ] Runtime check: `curl -vk https://localhost:8443`
+
+## Operational Impact
+- Ports changed: <none|8443|other>
+- TLS config changed: <yes|no>
+- Config schema changed: <yes|no>
+- Logging behavior changed: <yes|no>
+
+## Evidence
+<Relevant logs, curl output, or h2load results for protocol/routing changes>
+```
+
+## Incident Response & Runbook
+
+### Common Failure Modes
+| Symptom | Likely Cause | Investigation |
+|---------|--------------|---------------|
+| High latency p99 | Thread pool exhaustion, io_uring queue depth | Check metrics, `io_uring` SQE/CQE depths |
+| TLS handshake failures | Cipher mismatch, cert expiry | `openssl s_client -connect localhost:8443` |
+| Memory growth | Leak in request path | Valgrind, `gcov` allocation hotspots |
+| Connection refused | Backlog full, max_connections hit | `netstat`, server logs |
+
+### Debugging Commands
+```bash
+# Check TLS configuration
+openssl s_client -connect localhost:8443 -tls1_2
+
+# Profile with valgrind (slow but thorough)
+valgrind --leak-check=full --track-origins=yes ./emme
+
+# Trace system calls
+strace -f -e trace=network,read,write ./emme
+
+# Monitor io_uring (kernel 5.10+)
+cat /sys/kernel/debug/io_uring/
+```
+
+### Rollback Procedure
+1. Revert last deploy commit
+2. Trigger CI/CD rollback workflow
+3. Verify health check at `/health` returns 200
+4. Monitor error rate for 15 minutes
