@@ -44,6 +44,10 @@ static void set_config_defaults(ServerConfig *config)
     config->ssl.session_cache_size = 100000;
     config->ssl.session_timeout = 300;
     config->ssl.session_ticket_key[0] = '\0';
+
+    config->http2.keepalive_timeout = 60;
+    config->http2.max_requests_per_connection = 1000;
+    config->http2.max_concurrent_streams = 100;
 }
 
 static int get_yaml_string(yaml_node_t *node, const char *field, char *buffer, size_t size)
@@ -421,6 +425,32 @@ int load_config(ServerConfig *config, const char *file_path)
         if (ticket_key_node &&
             get_yaml_string(ticket_key_node, "ssl.session_ticket_key",
                             config->ssl.session_ticket_key, sizeof(config->ssl.session_ticket_key)) != 0)
+            goto cleanup;
+    }
+
+    node = find_yaml_node(&document, root, "http2");
+    if (node) {
+        if (node->type != YAML_MAPPING_NODE) {
+            fprintf(stderr, "Invalid 'http2': expected mapping\n");
+            goto cleanup;
+        }
+
+        yaml_node_t *keepalive_node = find_yaml_node(&document, node, "keepalive_timeout");
+        if (keepalive_node &&
+            get_yaml_int_in_range(keepalive_node, "http2.keepalive_timeout", 10, 300,
+                                  &config->http2.keepalive_timeout) != 0)
+            goto cleanup;
+
+        yaml_node_t *max_requests_node = find_yaml_node(&document, node, "max_requests_per_connection");
+        if (max_requests_node &&
+            get_yaml_int_in_range(max_requests_node, "http2.max_requests_per_connection", 1, 100000,
+                                  &config->http2.max_requests_per_connection) != 0)
+            goto cleanup;
+
+        yaml_node_t *max_streams_node = find_yaml_node(&document, node, "max_concurrent_streams");
+        if (max_streams_node &&
+            get_yaml_int_in_range(max_streams_node, "http2.max_concurrent_streams", 1, 1000,
+                                  &config->http2.max_concurrent_streams) != 0)
             goto cleanup;
     }
 

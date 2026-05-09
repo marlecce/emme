@@ -25,6 +25,12 @@ typedef struct {
 } SSLConfig;
 
 typedef struct {
+    int keepalive_timeout;
+    int max_requests_per_connection;
+    int max_concurrent_streams;
+} HTTP2Config;
+
+typedef struct {
     int port;
     int max_connections;
     char log_level[MAX_LOG_LEVEL];
@@ -32,6 +38,7 @@ typedef struct {
     Route routes[MAX_ROUTES];
     LoggingConfig logging;
     SSLConfig ssl;
+    HTTP2Config http2;
 } ServerConfig;
 
 int load_config(ServerConfig *config, const char *file_path);

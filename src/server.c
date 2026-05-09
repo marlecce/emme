@@ -43,6 +43,7 @@ typedef struct {
     int want_read;
     int want_write;
     size_t total_read;
+    int request_count;
 } H2IO;
 
 static int find_header_end(const char *buf, size_t len)
@@ -65,12 +66,17 @@ static int on_header_callback(nghttp2_session *session,
                               const uint8_t *value, size_t valuelen,
                               uint8_t flags, void *user_data)
 {
-    (void)session;
     (void)flags;
-    (void)user_data;
     if (frame->hd.type == NGHTTP2_HEADERS &&
         frame->headers.cat == NGHTTP2_HCAT_REQUEST)
     {
+        H2IO *io = (H2IO *)user_data;
+        if (io && frame->headers.cat == NGHTTP2_HCAT_REQUEST &&
+            namelen == 7 && strncmp((const char *)name, ":method", 7) == 0)
+        {
+            io->request_count++;
+        }
+        
         StreamData *data = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
         if (!data)
         {
@@ -421,14 +427,32 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
         .want_read = 0,
         .want_write = 0,
         .total_read = 0,
+        .request_count = 0,
     };
-    if (nghttp2_session_server_new(&session, callbacks, &io) != 0)
+    nghttp2_option *options;
+    if (nghttp2_option_new(&options) == 0) {
+        nghttp2_option_set_peer_max_concurrent_streams(options,
+            (uint32_t)config->http2.max_concurrent_streams);
+    } else {
+        options = NULL;
+    }
+    
+    if (nghttp2_session_server_new2(&session, callbacks, &io, options) != 0)
     {
         log_message(LOG_LEVEL_ERROR, "Failed to create nghttp2 session");
         nghttp2_session_callbacks_del(callbacks);
+        if (options) nghttp2_option_del(options);
         return;
     }
-    log_message(LOG_LEVEL_INFO, "HTTP/2 session started");
+    
+    if (options) nghttp2_option_del(options);
+    
+    log_message(LOG_LEVEL_INFO, "HTTP/2 session started (max_streams=%d keepalive=%ds)",
+                config->http2.max_concurrent_streams, config->http2.keepalive_timeout);
+    
+    time_t last_activity = time(NULL);
+    time_t connection_start = last_activity;
+    
     int rv = nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, NULL, 0);
     if (rv < 0)
     {
@@ -448,6 +472,20 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
     rv = 0;
     while (nghttp2_session_want_read(session) || nghttp2_session_want_write(session))
     {
+        time_t now = time(NULL);
+        if (now - last_activity > config->http2.keepalive_timeout)
+        {
+            log_message(LOG_LEVEL_INFO, "HTTP/2 connection timeout: idle %lds (max %ds)",
+                        (long)(now - last_activity), config->http2.keepalive_timeout);
+            break;
+        }
+        if (io.request_count >= config->http2.max_requests_per_connection)
+        {
+            log_message(LOG_LEVEL_INFO, "HTTP/2 connection closed: reached max requests (%d)",
+                        config->http2.max_requests_per_connection);
+            break;
+        }
+        
         short events = 0;
         if (io.want_read || io.want_write)
         {
@@ -498,6 +536,7 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
             else
             {
                 H2_LOG("h2 recv processed rv=%d total_read=%zu", rv, io.total_read);
+                last_activity = now;
             }
         }
         if (pfd.revents & POLLOUT)
@@ -514,9 +553,15 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
             else
             {
                 H2_LOG("h2 send processed rv=%d", rv);
+                last_activity = now;
             }
         }
     }
+    
+    time_t conn_duration = time(NULL) - connection_start;
+    log_message(LOG_LEVEL_INFO, "HTTP/2 session ended: duration=%lds requests=%d",
+                (long)conn_duration, io.request_count);
+    
     nghttp2_session_del(session);
     nghttp2_session_callbacks_del(callbacks);
 }

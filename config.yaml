@@ -21,6 +21,11 @@ ssl:
   session_timeout: 300
   session_ticket_key: "/etc/emme/ticket.key"
 
+http2:
+  keepalive_timeout: 60
+  max_requests_per_connection: 1000
+  max_concurrent_streams: 100
+
 routes:
     - path: "/static/"
       technology: "static"
