@@ -27,7 +27,7 @@
     </tr>
     <tr>
       <th scope="row">Date:</th>
-      <td>2026-05-09 20:37:41</td>
+      <td>2026-05-10 09:37:34</td>
     </tr>
   </table>
 </div>
@@ -921,14 +921,14 @@
         <details class="linebranchDetails">
         <summary class="linebranchSummary">4/4</summary>
         <div class="linebranchContents">
-          <div class="takenBranch">&check; Branch 0 taken 661 times.</div>
+          <div class="takenBranch">&check; Branch 0 taken 662 times.</div>
           <div class="takenBranch">&check; Branch 1 taken 22 times.</div>
-          <div class="takenBranch">&check; Branch 2 taken 335 times.</div>
+          <div class="takenBranch">&check; Branch 2 taken 336 times.</div>
           <div class="takenBranch">&check; Branch 3 taken 326 times.</div>
         </div>
         </details>
       </td>
-      <td class="linecount coveredLine">683</td>
+      <td class="linecount coveredLine">684</td>
       <td class="src coveredLine"><span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">pool</span><span class="o">-&gt;</span><span class="n">queue</span><span class="p">.</span><span class="n">count</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="o">!</span><span class="n">pool</span><span class="o">-&gt;</span><span class="n">shutdown</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -949,21 +949,21 @@
       <td class="lineno"><a id="l117" href="#l117">117</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">335</td>
+      <td class="linecount coveredLine">336</td>
       <td class="src coveredLine"><span class="w">            </span><span class="n">clock_gettime</span><span class="p">(</span><span class="n">CLOCK_REALTIME</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">ts</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l118" href="#l118">118</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">335</td>
+      <td class="linecount coveredLine">336</td>
       <td class="src coveredLine"><span class="w">            </span><span class="n">ts</span><span class="p">.</span><span class="n">tv_sec</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">THREAD_IDLE_TIMEOUT</span><span class="p">;</span></td>
     </tr>
     <tr class="source-line">
       <td class="lineno"><a id="l119" href="#l119">119</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">335</td>
+      <td class="linecount coveredLine">336</td>
       <td class="src coveredLine"><span class="w">            </span><span class="kt">int</span><span class="w"> </span><span class="n">ret</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">pthread_cond_timedwait</span><span class="p">(</span><span class="o">&amp;</span><span class="n">pool</span><span class="o">-&gt;</span><span class="n">cond</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">pool</span><span class="o">-&gt;</span><span class="n">lock</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">ts</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
@@ -980,13 +980,13 @@
         <summary class="linebranchSummary">1/4</summary>
         <div class="linebranchContents">
           <div class="notTakenBranch">&cross; Branch 0 not taken.</div>
-          <div class="takenBranch">&check; Branch 1 taken 335 times.</div>
+          <div class="takenBranch">&check; Branch 1 taken 336 times.</div>
           <div class="notTakenBranch">&cross; Branch 2 not taken.</div>
           <div class="notTakenBranch">&cross; Branch 3 not taken.</div>
         </div>
         </details>
       </td>
-      <td class="linecount partialCoveredLine">335</td>
+      <td class="linecount partialCoveredLine">336</td>
       <td class="src partialCoveredLine"><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">ret</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">ETIMEDOUT</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">pool</span><span class="o">-&gt;</span><span class="n">queue</span><span class="p">.</span><span class="n">count</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">{</span></td>
     </tr>
     <tr class="source-line">
@@ -1077,7 +1077,7 @@
       <td class="lineno"><a id="l133" href="#l133">133</a></td>
       <td class="linebranch">
       </td>
-      <td class="linecount coveredLine">325</td>
+      <td class="linecount coveredLine">326</td>
       <td class="src coveredLine"><span class="w">            </span><span class="n">pthread_exit</span><span class="p">(</span><span class="nb">NULL</span><span class="p">);</span></td>
     </tr>
     <tr class="source-line">
