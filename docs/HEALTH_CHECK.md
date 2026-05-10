@@ -153,5 +153,6 @@ telnet localhost 8443
 
 ## Related Documentation
 
-- [Deployment Guide](DEPLOYMENT.md) - TBD
-- [README](../README.md)
+- [Deployment Guide](DEPLOYMENT.md) - Production deployment and load balancer integration
+- [Monitoring Setup](MONITORING.md) - Prometheus and Grafana integration
+- [README](../README.md) - General project documentation

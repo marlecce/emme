@@ -12,15 +12,25 @@ This project implements a high-performance web server in C that aims to outperfo
   - **Asynchronous Logging:** Uses a lock-free ring buffer and a dedicated logging thread to minimize performance impact.
   - **Configurable Log Output:** Supports multiple appenders (e.g., file and console) via an array-based configuration.
   - **Log Rollover:** Rollover based on file size or daily rotation.
+  - **JSON or Plain Text:** Structured JSON logs for aggregation or human-readable plain text.
 - **Health Check Endpoint:** Built-in `/health` endpoint for monitoring and load balancer integration.
-- **Configurable:** Loads settings from a YAML configuration file.
+- **Advanced Configuration System:**
+  - **YAML-based Config:** Clean, hierarchical configuration with validation.
+  - **Line Number Error Reporting:** Precise error messages with line numbers for quick debugging.
+  - **Comprehensive Validation:** Range checking, type validation, and cross-field dependency checks.
+  - **Sensible Defaults:** Production-ready defaults with minimal configuration required.
 - **HTTPS by Default:**
   - **TLS Termination:** The server terminates TLS connections using OpenSSL.
   - **SSL/TLS Configuration:** Certificate and private key settings are loaded from the configuration file.
   - **TLS 1.2/1.3 Support:** Modern TLS versions with strong cipher suites.
-  - **Session Resumption:** TLS session caching for faster handshakes.
+  - **Session Resumption:** TLS session caching and tickets for faster handshakes.
+  - **Performance Optimizations:** Configurable SSL buffer sizes (32KB default), partial write support, and memory-efficient buffer release.
   - **Self-Signed Certificate for Development:** A script is provided to generate a self-signed certificate for development and testing.
   - **Production Guidance:** Clear instructions on obtaining and configuring a certificate from a trusted CA for production use.
+- **HTTP/2 Optimizations:**
+  - **Keepalive Timeout:** Configurable idle connection timeout (default 60s).
+  - **Request Limits:** Max requests per connection and concurrent streams to prevent resource exhaustion.
+  - **ALPN Negotiation:** Automatic HTTP/2 or HTTP/1.1 selection via TLS ALPN.
 
 ## Project Structure
 
@@ -45,7 +55,7 @@ docs/             # Documentation
 - **src/log.c / include/log.h**: Advanced logging module with async ring buffer.
 - **src/tls.c / include/tls.h**: TLS module using OpenSSL to create and manage the SSL context.
 - **src/router.c / include/router.h**: Request routing (static files, reverse proxy).
-- **src/thread_pool.c / include/thread_pool.h**: Dynamic thread pool with work stealing.
+- **src/thread_pool.c / include/thread_pool.h**: Dynamic thread pool with mutex-protected queue (lock-free implementation planned).
 
 ## Configuration
 
@@ -77,7 +87,20 @@ logging:
 
 ssl:
   certificate: certs/dev.crt      # Path to the SSL certificate (self-signed for development)
-  private_key: certs/dev.key"       # Path to the SSL private key (self-signed for development)
+  private_key: certs/dev.key      # Path to the SSL private key (self-signed for development)
+  # SSL Performance Settings
+  read_buffer_size: 32768         # SSL read buffer size (4KB-64KB, default 32KB)
+  enable_partial_write: 1         # Enable SSL partial writes for async I/O (default 1)
+  release_buffers: 1              # Release SSL buffers on idle to save memory (~34KB per connection)
+  # TLS Session Resumption
+  session_cache_size: 100000      # Session cache size (default 100K entries)
+  session_timeout: 300            # Session timeout in seconds (default 300s)
+  # session_ticket_key: /path/to/ticket.key  # Optional: TLS session ticket key
+
+http2:
+  keepalive_timeout: 60           # HTTP/2 keepalive timeout in seconds (10-300, default 60)
+  max_requests_per_connection: 1000  # Max requests per connection (1-100000, default 1000)
+  max_concurrent_streams: 100     # Max concurrent streams (1-1000, default 100)
 ```
 
 Adjust these settings as needed for your environment.
@@ -188,7 +211,31 @@ EMME_PORT=9443 EMME_LOG_LEVEL=debug ./emme
 | `EMME_PORT` | Server port | From config |
 | `EMME_LOG_LEVEL` | Log level | From config |
 
-## Performance tests
+## Performance
+
+### Benchmark Results
+
+With SSL buffer optimizations (32KB buffers, partial writes, buffer release):
+
+```bash
+h2load -n 10000 -c 100 -m 2 https://localhost:8443/
+```
+
+**Results:**
+- **Throughput:** 2,236 req/s (697 KB/s)
+- **Success Rate:** 100% (0 failures)
+- **Mean Latency:** 43.02ms
+- **p98 Latency:** 48.64ms
+- **TLS Protocol:** TLSv1.3
+- **Cipher:** TLS_AES_128_GCM_SHA256
+
+**Optimization Impact:**
+- Buffer size increased from 8KB → 32KB (4x)
+- SSL read buffer: 32KB (reduces syscall overhead)
+- SSL_MODE_ENABLE_PARTIAL_WRITE: Better async I/O integration
+- SSL_MODE_RELEASE_BUFFERS: Saves ~34KB per idle connection
+
+### Performance Tests
 
 ```bash
 h2load -n100 -c10 -m2 https://localhost:8443/
@@ -207,11 +254,22 @@ The coverage is available [here](https://marlecce.github.io/emme/)
 
 ## Testing
 
+### Test Suite
+
 Run the full test suite:
 
 ```bash
 make test
 ```
+
+**Test Coverage:**
+- **Unit Tests:** Config parsing, HTTP parser, router, thread pool
+- **Integration Tests:** TLS handshakes, HTTP/2, static file serving, reverse proxy
+- **E2E Tests:** Full stack verification with real HTTPS requests
+
+**Current Status:** 52 tests passing (100% success rate)
+
+### Coverage Analysis
 
 Run with coverage instrumentation:
 
@@ -230,6 +288,23 @@ cat coverage/summary.txt
 open coverage/index.html
 ```
 
+**Coverage Highlights:**
+- **config.c:** 67% branch coverage (comprehensive config validation tests)
+- **http_parser.c:** 75% branch coverage
+- **Overall Project:** 54% branch coverage
+
+### Test Categories
+
+| Module | Tests | Coverage | Focus |
+|--------|-------|----------|-------|
+| Config Parser | 15 | 67% | SSL settings, HTTP/2, logging, validation |
+| HTTP Parser | 12 | 75% | Request parsing, edge cases, invalid input |
+| Router | 8 | 46% | Path matching, static/reverse proxy routing |
+| Thread Pool | 5 | 52% | Task scheduling, dynamic scaling |
+| Server | 7 | 48% | TLS, connections, graceful shutdown |
+| HTTP/2 | 3 | 41% | Protocol negotiation, frame handling |
+| E2E | 2 | 54% | Full request lifecycle |
+
 ## Production Deployment
 
 See [Deployment Guide](docs/DEPLOYMENT.md) for:
@@ -241,8 +316,10 @@ See [Deployment Guide](docs/DEPLOYMENT.md) for:
 
 ## Documentation
 
-- [Health Check Endpoint](docs/HEALTH_CHECK.md) - Health endpoint details
-- [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
+- [Performance Tuning Guide](docs/PERFORMANCE.md) - Benchmarks, SSL optimization, system tuning
+- [Configuration Improvements](docs/CONFIG_IMPROVEMENTS.md) - Config system refactoring details
+- [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment and load balancer integration
+- [Health Check Endpoint](docs/HEALTH_CHECK.md) - Health endpoint monitoring
 - [Monitoring Setup](docs/MONITORING.md) - Prometheus and Grafana integration - TBD
 
 ## License

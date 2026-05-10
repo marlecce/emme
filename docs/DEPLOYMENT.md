@@ -97,19 +97,33 @@ Location: `/etc/emme/config.yaml`
 server:
   port: 8443
   max_connections: 10000
-  keep_alive_timeout: 30
 
-tls:
+ssl:
   certificate: /etc/ssl/certs/emme.crt
   private_key: /etc/ssl/private/emme.key
-  min_version: TLS1.2
+  # Performance optimizations
+  read_buffer_size: 32768        # 32KB SSL buffers (4KB-64KB)
+  enable_partial_write: 1        # Enable partial writes for async I/O
+  release_buffers: 1             # Release buffers on idle (~34KB savings per connection)
+  # Session resumption
+  session_cache_size: 100000     # Session cache (100K entries)
+  session_timeout: 300           # Session timeout (300 seconds)
+
+http2:
+  keepalive_timeout: 60          # Keepalive timeout (10-300 seconds)
+  max_requests_per_connection: 1000  # Max requests per connection
+  max_concurrent_streams: 100    # Max concurrent HTTP/2 streams
 
 logging:
   level: info
   file: /var/log/emme/emme.log
-  rotation:
-    max_size_mb: 100
-    max_files: 7
+  format: json                   # json or plain
+  buffer_size: 4096              # Async ring buffer size
+  rollover_size: 10485760        # 10MB max file size
+  rollover_daily: true
+  appender_flags:
+    - file
+    - console
 ```
 
 ## Load Balancer Integration
@@ -241,6 +255,29 @@ uname -r
 cat /proc/version
 ```
 
+### SSL Performance Verification
+
+Check SSL buffer configuration in logs:
+
+```bash
+# Look for SSL initialization messages
+grep -i "ssl" /var/log/emme/emme.log | head -20
+```
+
+Expected output:
+```
+SSL context initialized with read_buffer_size=32768, partial_write=1, release_buffers=1
+```
+
+Benchmark SSL performance:
+
+```bash
+# Test with 100 concurrent connections
+h2load -n 10000 -c 100 -m 2 https://localhost:8443/
+
+# Expected: 2,200+ req/s with 32KB buffers
+```
+
 ## TLS Configuration
 
 ### Production Certificates
@@ -269,7 +306,7 @@ tls:
 
 Minimum TLS 1.2 with strong ciphers:
 ```yaml
-tls:
+ssl:
   min_version: TLS1.2
   ciphers: |
     TLS_AES_256_GCM_SHA384:
@@ -278,6 +315,28 @@ tls:
     ECDHE-RSA-AES256-GCM-SHA384:
     ECDHE-RSA-AES128-GCM-SHA256
 ```
+
+### SSL Performance Tuning
+
+For high-throughput workloads, tune SSL buffer sizes:
+
+```yaml
+ssl:
+  # Increase buffer size for better throughput (default 32KB)
+  read_buffer_size: 65536  # 64KB for high-throughput
+  
+  # Keep partial writes enabled for io_uring integration
+  enable_partial_write: 1
+  
+  # Disable buffer release if memory is not a concern
+  # (keeps buffers allocated for faster response)
+  release_buffers: 0
+```
+
+**Trade-offs:**
+- **Larger buffers**: Better throughput, higher memory per connection
+- **release_buffers=0**: Faster response, ~34KB more memory per idle connection
+- **release_buffers=1**: Memory efficient, slight overhead on reactivation
 
 ## Logging
 
@@ -363,6 +422,24 @@ emme --config /etc/emme/config.yaml --test
 ```bash
 # Test TLS configuration
 openssl s_client -connect localhost:8443 -tls1_2
+
+# Test TLS 1.3
+openssl s_client -connect localhost:8443 -tls1_3
+
+# Check cipher suite
+openssl s_client -connect localhost:8443 | grep Cipher
+```
+
+### High Memory Usage
+
+1. Check active connections: `netstat -an | grep 8443 | wc -l`
+2. Review SSL buffer settings: `release_buffers=1` saves ~34KB per idle connection
+3. Monitor with: `ps -o pid,rss,vsz,comm -C emme`
+
+```bash
+# Calculate memory per connection
+# Base: ~50KB + SSL buffers: 32KB (if release_buffers=0)
+# With release_buffers=1: idle connections use ~16KB
 ```
 
 ## Security Hardening

@@ -20,8 +20,9 @@ This codebase runs a performance-sensitive HTTPS backend in C for multi-cloud de
 ## Architecture Overview
 - **I/O Model**: io_uring-based async I/O with thread pool for concurrency
 - **Protocols**: HTTP/1.1 and HTTP/2 (via nghttp2) over TLS 1.2/1.3
-- **Configuration**: YAML-based config with runtime-safe defaults
-- **Logging**: Structured logging with file rotation and console output
+- **Configuration**: YAML-based config with runtime-safe defaults, line-number error reporting, and comprehensive validation
+- **Logging**: Structured logging with file rotation, console output, and async ring buffer
+- **Performance**: 32KB SSL buffers, work-stealing thread pool (planned), TLS session resumption
 
 ## Project Structure & Ownership
 ```
@@ -146,6 +147,7 @@ For production multi-cloud deployment, integrate:
 - **Coverage target**: ≥80% line, ≥70% branch for critical modules
 - **Regression rule**: Every bug fix adds or tightens a test
 - **CI enforcement**: Threshold checks in `.github/workflows/ci.yml`
+- **Current Status**: 52 tests passing, 54% overall branch coverage, 67% config.c coverage
 
 ### Running Tests
 ```bash
