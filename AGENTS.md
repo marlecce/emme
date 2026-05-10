@@ -167,6 +167,24 @@ make COVERAGE=1 && make test && make coverage-report
 - **Artifacts**: Coverage report deployed to GitHub Pages on main merge
 - **Failure policy**: Red CI blocks merge; flaky tests quarantined immediately
 
+## Automated Code Quality
+
+### C-Code-Quality Skill
+After **any code implementation or modification**, automatically apply the c-code-quality skill workflow:
+
+1. **Build verification**: `make clean && make` - ensure zero warnings
+2. **Analyze changes**: Check for warnings, long functions (>100 lines), magic numbers, duplication
+3. **Apply fixes**: Remove duplicate includes, replace magic numbers with constants, extract helper functions
+4. **Verify**: `make test` must pass, zero new warnings
+
+Skill location: `skills/c-code-quality/skill.md`
+
+**Trigger automatically after**:
+- New feature implementation
+- Bug fixes
+- Refactoring changes
+- Before any commit to critical modules (`server`, `tls`, `router`, `http_parser`, `thread_pool`, `config`)
+
 ## Commit & PR Requirements
 
 ### Commit Messages
