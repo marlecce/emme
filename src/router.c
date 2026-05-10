@@ -12,26 +12,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include "router.h"
-#include "config.h"
-#include "http_parser.h"
-#include "tls.h"
 #include "log.h"
-#include "server.h"
-#include <sys/stat.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/sendfile.h>
-#include <arpa/inet.h>
-#include <poll.h>
-#include <errno.h>
-#include <limits.h>
-#include <stdbool.h>
+#include "config.h"
+#include "tls.h"
 #include "http2_response.h"
-#include "router.h"
-#include "server.h"
+#include "metrics.h"
 
 static int ssl_write_all(SSL *ssl, const char *buf, size_t len);
 
@@ -484,6 +473,9 @@ int proxy_request_tls(HttpRequest *req, const char *raw_request, size_t req_len,
  */
 int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerConfig *config, SSL *ssl, Http2Response *h2resp)
 {
+    (void)raw;
+    (void)raw_len;
+    
     static const char *root_body =
         "<html><head><title>High Performance Web Server</title></head>"
         "<body><h1>Welcome to High Performance Web Server</h1>"

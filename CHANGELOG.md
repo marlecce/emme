@@ -8,6 +8,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **C Code Quality Improvement Skill**
+  - Created reusable skill at `skills/c-code-quality/` with 7 documentation files (1,627 lines total)
+  - Workflow: 4-phase process (Analysis → Prioritization → Implementation → Verification)
+  - 7 refactoring patterns with C-specific examples
+  - Quality gates checklist with HIGH/MEDIUM/LOW priority categorization
+  - Quick reference card with one-liner commands
+  - Before/after examples from actual codebase refactoring
+  - Applied to `src/metrics.c` (126 → 40 lines via helper extraction)
+  - Applied to `src/server.c` (161 → 109 lines via helper extraction)
+
+### Code Quality Improvements
+- **src/metrics.c Refactoring**
+  - Extracted 3 helper functions: `metrics_format_counter()`, `metrics_format_gauge()`, `metrics_format_histogram()`
+  - Reduced `metrics_format_prometheus()` from 126 to 40 lines
+  - Added named constants: `METRICS_BUFFER_SIZE`, `DEFAULT_METRICS_PORT`, `MAX_PORT_NUMBER`
+  - Added snprintf return value validation for buffer truncation detection
+  - Removed duplicate includes
+
+- **src/server.c Refactoring**
+  - Extracted `h2_session_init()` helper (69 lines) for HTTP/2 session setup
+  - Extracted `h2_session_send_initial_settings()` helper (15 lines)
+  - Reduced `handle_http2_connection()` from 161 to 109 lines (-32%)
+  - Added named constants: `H2_POLL_ERROR_EVENTS`, `NS_PER_MS`, `US_PER_MS`
+  - Replaced 6 magic numbers with named constants
+  - Improved unclear comment ("legacy methods" → "synchronous SSL I/O")
+  - All changes verified: zero warnings, 76/76 tests passing
+
+- **src/main.c Improvements**
+  - Added named constants: `DEFAULT_METRICS_PORT`, `MAX_PORT_NUMBER`, `METRICS_SERVER_BACKLOG`
+  - Consistent logging format for all error paths
+  - Clear error messages for metrics server initialization failures
+
+- **src/router.c Cleanup**
+  - Removed duplicate includes
+  - Added request metrics integration point
+
+### Prometheus Metrics Endpoint
+  - New metrics server on port 9090 (configurable via `EMME_METRICS_PORT`)
+  - `/metrics` endpoint returning Prometheus text format
+  - Request metrics: `emme_requests_total` counter, `emme_request_duration_seconds` histogram
+  - Connection metrics: `emme_active_connections` gauge
+  - Thread pool metrics: active threads, queue depth gauges
+  - TLS metrics: `emme_tls_handshakes_total` counter, `emme_tls_handshake_duration_seconds` histogram
+  - io_uring metrics: SQE/CQE depth gauges
+  - Shutdown metrics: `emme_shutdown_drain_active` gauge
+  - Lock-free implementation using atomic operations (<1% performance overhead)
+  - 8 new unit tests for metrics module
+
 - **Environment Variable Overrides**
   - `EMME_MAX_CONNECTIONS` - override max connections (validation: 1-1000000)
   - `EMME_SSL_CERT_PATH` - override SSL certificate path (supports spaces in paths)

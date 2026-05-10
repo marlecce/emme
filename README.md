@@ -31,6 +31,14 @@ This project implements a high-performance web server in C that aims to outperfo
   - **Keepalive Timeout:** Configurable idle connection timeout (default 60s).
   - **Request Limits:** Max requests per connection and concurrent streams to prevent resource exhaustion.
   - **ALPN Negotiation:** Automatic HTTP/2 or HTTP/1.1 selection via TLS ALPN.
+- **Observability:**
+  - **Prometheus Metrics:** Built-in metrics server on port 9090 with request, connection, TLS, and io_uring metrics.
+  - **Structured Logging:** JSON or plain text logs with async ring buffer for minimal overhead.
+  - **Health Endpoint:** `/health` returns 200 OK or 503 Service Unavailable during graceful shutdown.
+- **Code Quality:**
+  - **Reusable Skill:** `skills/c-code-quality/` with documented workflow, patterns, and examples.
+  - **Systematic Refactoring:** 4-phase process (Analysis → Prioritization → Implementation → Verification).
+  - **Quality Gates:** Zero warnings, 100% test pass rate, functions <100 lines target.
 
 ## Project Structure
 
@@ -320,6 +328,8 @@ See [Deployment Guide](docs/DEPLOYMENT.md) for:
 - [Configuration Improvements](docs/CONFIG_IMPROVEMENTS.md) - Config system refactoring details
 - [Deployment Guide](docs/DEPLOYMENT.md) - Production deployment and load balancer integration
 - [Health Check Endpoint](docs/HEALTH_CHECK.md) - Health endpoint monitoring
+- [Prometheus Metrics](docs/METRICS.md) - Metrics endpoint, available metrics, troubleshooting
+- [Code Quality Skill](docs/CODE_QUALITY.md) - Refactoring workflow, patterns, examples
 - [Monitoring Setup](docs/MONITORING.md) - Prometheus and Grafana integration - TBD
 
 ## License

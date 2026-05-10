@@ -18,6 +18,7 @@
 #include "http_parser.h"
 #include "router.h"
 #include "tls.h"
+#include "metrics.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include "thread_pool.h"
@@ -36,11 +37,15 @@
     } while (0)
 
 #define H2_POLL_TIMEOUT_MS 100
+#define H2_POLL_ERROR_EVENTS (POLLERR | POLLHUP | POLLNVAL)
 
 #define SERVER_BACKLOG 2048
 #define THREAD_POOL_MIN_THREADS 32
 #define THREAD_POOL_MAX_THREADS_RATIO 1
 #define SESSION_STATS_INTERVAL_SEC 60
+
+#define NS_PER_MS 1000000
+#define US_PER_MS 1000
 
 typedef struct {
     SSL *ssl;
@@ -452,10 +457,12 @@ static int accept_and_dispatch_client(ThreadPool *pool, ServerConfig *config)
     task_data->config = config;
     
     atomic_fetch_add(&g_shutdown_ctx.in_flight_requests, 1);
+    metrics_set_active_connections(atomic_load(&g_shutdown_ctx.in_flight_requests));
     
     if (!thread_pool_add_task(pool, client_task, task_data)) {
         log_message(LOG_LEVEL_ERROR, "Failed to add task to thread pool");
         atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
+        metrics_set_active_connections(atomic_load(&g_shutdown_ctx.in_flight_requests));
         free(task_data);
         close(client_fd);
     }
@@ -495,7 +502,7 @@ static void drain_in_flight_requests(void)
             last_log_time = now.tv_sec;
         }
         
-        struct timespec sleep_time = {.tv_sec = 0, .tv_nsec = 100000000};
+        struct timespec sleep_time = {.tv_sec = 0, .tv_nsec = 100 * NS_PER_MS};
         nanosleep(&sleep_time, NULL);
     }
     
@@ -508,7 +515,7 @@ static void drain_in_flight_requests(void)
     
     drain_duration_ms = 
         (g_shutdown_ctx.metrics.end_time.tv_sec - g_shutdown_ctx.metrics.start_time.tv_sec) * 1000 +
-        (g_shutdown_ctx.metrics.end_time.tv_nsec - g_shutdown_ctx.metrics.start_time.tv_nsec) / 1000000;
+        (g_shutdown_ctx.metrics.end_time.tv_nsec - g_shutdown_ctx.metrics.start_time.tv_nsec) / NS_PER_MS;
     
     log_message(LOG_LEVEL_INFO, 
                 "Graceful shutdown complete. "
@@ -680,9 +687,66 @@ static int perform_nonblocking_ssl_accept(SSL *ssl, int client_fd, struct io_uri
         }
     }
     gettimeofday(&end, NULL);
-    long handshake_ms = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
+    long handshake_ms = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / US_PER_MS;
     log_message(LOG_LEVEL_INFO, "Nonblocking SSL handshake completed in %ld ms", handshake_ms);
+    metrics_increment_tls_handshake(1);
+    metrics_record_tls_handshake_duration(handshake_ms / 1000.0);
     return ret;
+}
+
+static nghttp2_session *h2_session_init(nghttp2_session_callbacks **out_callbacks,
+                                         H2IO *io, ServerConfig *config)
+{
+    nghttp2_session *session = NULL;
+    nghttp2_option *options = NULL;
+    
+    if (nghttp2_session_callbacks_new(out_callbacks) != 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to initialize HTTP/2 callbacks");
+        return NULL;
+    }
+    
+    nghttp2_session_callbacks_set_send_callback(*out_callbacks, send_callback);
+    nghttp2_session_callbacks_set_recv_callback(*out_callbacks, recv_callback);
+    nghttp2_session_callbacks_set_on_header_callback(*out_callbacks, on_header_callback);
+    nghttp2_session_callbacks_set_on_frame_recv_callback(*out_callbacks, on_frame_recv_callback);
+    nghttp2_session_callbacks_set_on_stream_close_callback(*out_callbacks, on_stream_close_callback);
+    
+    if (nghttp2_option_new(&options) == 0) {
+        nghttp2_option_set_peer_max_concurrent_streams(options,
+            (uint32_t)config->http2.max_concurrent_streams);
+    }
+    
+    if (nghttp2_session_server_new2(&session, *out_callbacks, io, options) != 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to create nghttp2 session");
+        nghttp2_session_callbacks_del(*out_callbacks);
+        *out_callbacks = NULL;
+        if (options) nghttp2_option_del(options);
+        return NULL;
+    }
+    
+    if (options) nghttp2_option_del(options);
+    
+    log_message(LOG_LEVEL_INFO, "HTTP/2 session started (max_streams=%d keepalive=%ds)",
+                config->http2.max_concurrent_streams, config->http2.keepalive_timeout);
+    
+    return session;
+}
+
+static int h2_session_send_initial_settings(nghttp2_session *session)
+{
+    int rv = nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, NULL, 0);
+    if (rv < 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to send initial SETTINGS frame: %s", nghttp2_strerror(rv));
+        return -1;
+    }
+    
+    rv = nghttp2_session_send(session);
+    if (rv < 0 && rv != NGHTTP2_ERR_WOULDBLOCK) {
+        log_message(LOG_LEVEL_ERROR, "Failed to flush initial SETTINGS: %s", nghttp2_strerror(rv));
+        return -1;
+    }
+    
+    return 0;
 }
 
 /* HTTP/2 connection handler using thread-local io_uring */
@@ -691,18 +755,8 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
     (void)ring;
     int flags = fcntl(client_fd, F_GETFL, 0);
     fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-    nghttp2_session_callbacks *callbacks;
-    nghttp2_session *session;
-    if (nghttp2_session_callbacks_new(&callbacks) != 0)
-    {
-        log_message(LOG_LEVEL_ERROR, "Failed to initialize HTTP/2 callbacks");
-        return;
-    }
-    nghttp2_session_callbacks_set_send_callback(callbacks, send_callback);
-    nghttp2_session_callbacks_set_recv_callback(callbacks, recv_callback);
-    nghttp2_session_callbacks_set_on_header_callback(callbacks, on_header_callback);
-    nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, on_frame_recv_callback);
-    nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
+    
+    nghttp2_session_callbacks *callbacks = NULL;
     H2IO io = {
         .ssl = ssl,
         .config = config,
@@ -711,129 +765,87 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
         .total_read = 0,
         .request_count = 0,
     };
-    nghttp2_option *options;
-    if (nghttp2_option_new(&options) == 0) {
-        nghttp2_option_set_peer_max_concurrent_streams(options,
-            (uint32_t)config->http2.max_concurrent_streams);
-    } else {
-        options = NULL;
-    }
     
-    if (nghttp2_session_server_new2(&session, callbacks, &io, options) != 0)
-    {
-        log_message(LOG_LEVEL_ERROR, "Failed to create nghttp2 session");
-        nghttp2_session_callbacks_del(callbacks);
-        if (options) nghttp2_option_del(options);
+    nghttp2_session *session = h2_session_init(&callbacks, &io, config);
+    if (!session) {
         return;
     }
     
-    if (options) nghttp2_option_del(options);
-    
-    log_message(LOG_LEVEL_INFO, "HTTP/2 session started (max_streams=%d keepalive=%ds)",
-                config->http2.max_concurrent_streams, config->http2.keepalive_timeout);
+    if (h2_session_send_initial_settings(session) != 0) {
+        nghttp2_session_del(session);
+        nghttp2_session_callbacks_del(callbacks);
+        return;
+    }
     
     time_t last_activity = time(NULL);
     time_t connection_start = last_activity;
+    int rv = 0;
     
-    int rv = nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, NULL, 0);
-    if (rv < 0)
-    {
-        log_message(LOG_LEVEL_ERROR, "Failed to send initial SETTINGS frame: %s", nghttp2_strerror(rv));
-        nghttp2_session_del(session);
-        nghttp2_session_callbacks_del(callbacks);
-        return;
-    }
-    rv = nghttp2_session_send(session);
-    if (rv < 0 && rv != NGHTTP2_ERR_WOULDBLOCK)
-    {
-        log_message(LOG_LEVEL_ERROR, "Failed to flush initial SETTINGS: %s", nghttp2_strerror(rv));
-        nghttp2_session_del(session);
-        nghttp2_session_callbacks_del(callbacks);
-        return;
-    }
-    rv = 0;
     while (nghttp2_session_want_read(session) || nghttp2_session_want_write(session))
     {
         time_t now = time(NULL);
-        if (now - last_activity > config->http2.keepalive_timeout)
-        {
+        
+        if (now - last_activity > config->http2.keepalive_timeout) {
             log_message(LOG_LEVEL_INFO, "HTTP/2 connection timeout: idle %lds (max %ds)",
                         (long)(now - last_activity), config->http2.keepalive_timeout);
             break;
         }
-        if (io.request_count >= config->http2.max_requests_per_connection)
-        {
+        
+        if (io.request_count >= config->http2.max_requests_per_connection) {
             log_message(LOG_LEVEL_INFO, "HTTP/2 connection closed: reached max requests (%d)",
                         config->http2.max_requests_per_connection);
             break;
         }
         
         short events = 0;
-        if (io.want_read || io.want_write)
-        {
-            if (io.want_read)
-                events |= POLLIN;
-            if (io.want_write)
-                events |= POLLOUT;
-        }
-        else
-        {
-            if (nghttp2_session_want_read(session))
-                events |= POLLIN;
-            if (nghttp2_session_want_write(session))
-                events |= POLLOUT;
+        if (io.want_read || io.want_write) {
+            if (io.want_read) events |= POLLIN;
+            if (io.want_write) events |= POLLOUT;
+        } else {
+            if (nghttp2_session_want_read(session)) events |= POLLIN;
+            if (nghttp2_session_want_write(session)) events |= POLLOUT;
         }
 
         H2_LOG("h2 loop: want_read=%d want_write=%d io.want_read=%d io.want_write=%d events=0x%x",
                nghttp2_session_want_read(session), nghttp2_session_want_write(session),
                io.want_read, io.want_write, events);
+        
         struct pollfd pfd = {.fd = client_fd, .events = events};
         int pret = poll(&pfd, 1, H2_POLL_TIMEOUT_MS);
-        if (pret < 0)
-        {
+        if (pret < 0) {
             log_message(LOG_LEVEL_ERROR, "poll failed: %s", strerror(errno));
             break;
         }
-        if (pret == 0)
-            continue;
-        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
-        {
+        if (pret == 0) continue;
+        
+        if (pfd.revents & H2_POLL_ERROR_EVENTS) {
             log_message(LOG_LEVEL_ERROR, "poll error/hangup: revents=%d", pfd.revents);
             break;
         }
+        
         H2_LOG("h2 loop: revents=0x%x", pfd.revents);
 
-        if (pfd.revents & POLLIN)
-        {
+        if (pfd.revents & POLLIN) {
             rv = nghttp2_session_recv(session);
-            if (rv < 0)
-            {
-                if (rv == NGHTTP2_ERR_EOF)
+            if (rv < 0) {
+                if (rv == NGHTTP2_ERR_EOF) {
                     log_message(LOG_LEVEL_INFO, "HTTP/2 session closed by client");
-                else if (rv != NGHTTP2_ERR_WOULDBLOCK)
+                } else if (rv != NGHTTP2_ERR_WOULDBLOCK) {
                     log_message(LOG_LEVEL_ERROR, "nghttp2_session_recv error: %s", nghttp2_strerror(rv));
-                if (rv != NGHTTP2_ERR_WOULDBLOCK)
-                    break;
-            }
-            else
-            {
+                }
+                if (rv != NGHTTP2_ERR_WOULDBLOCK) break;
+            } else {
                 H2_LOG("h2 recv processed rv=%d total_read=%zu", rv, io.total_read);
                 last_activity = now;
             }
         }
-        if (pfd.revents & POLLOUT)
-        {
+        
+        if (pfd.revents & POLLOUT) {
             rv = nghttp2_session_send(session);
-            if (rv < 0)
-            {
-                if (rv != NGHTTP2_ERR_WOULDBLOCK)
-                {
-                    log_message(LOG_LEVEL_ERROR, "nghttp2_session_send error: %s", nghttp2_strerror(rv));
-                    break;
-                }
-            }
-            else
-            {
+            if (rv < 0 && rv != NGHTTP2_ERR_WOULDBLOCK) {
+                log_message(LOG_LEVEL_ERROR, "nghttp2_session_send error: %s", nghttp2_strerror(rv));
+                break;
+            } else if (rv >= 0) {
                 H2_LOG("h2 send processed rv=%d", rv);
                 last_activity = now;
             }
@@ -848,15 +860,17 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
     nghttp2_session_callbacks_del(callbacks);
 }
 
-/* HTTP/1.1 connection handler using legacy methods */
+/* HTTP/1.1 connection handler - synchronous SSL I/O with keep-alive */
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config)
 {
     (void)client_fd;
+    struct timeval request_start;
 
     // Serve multiple HTTP/1.x requests on the same TLS socket
     for (;;) {
         char buffer[BUFFER_SIZE];
         int total_read = 0;
+        gettimeofday(&request_start, NULL);
 
         // 1) Read up to the end of headers (\r\n\r\n)
         int header_end = -1;
@@ -898,6 +912,13 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
 
         // 3) Route & send response (static, proxy, etc.)
         route_request_tls(&req, buffer, total_read, config, ssl, NULL);
+        
+        struct timeval request_end;
+        gettimeofday(&request_end, NULL);
+        double request_duration = (request_end.tv_sec - request_start.tv_sec) + 
+                                  (request_end.tv_usec - request_start.tv_usec) / (double)US_PER_MS;
+        metrics_increment_request(req.method, req.path, 200);
+        metrics_record_request_duration(request_duration);
 
         // 4) Loop back to read the next request
         //    (do NOT shutdown/close here)
@@ -927,6 +948,7 @@ void client_task(void *arg)
             close(data->client_fd);
             free(data);
             atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
+            metrics_set_active_connections(atomic_load(&g_shutdown_ctx.in_flight_requests));
             return;
         }
     }
@@ -936,6 +958,7 @@ void client_task(void *arg)
     local_ring = NULL;
     free(data);
     atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
+    metrics_set_active_connections(atomic_load(&g_shutdown_ctx.in_flight_requests));
 }
 
 /* Main per-connection handler; performs nonblocking TLS handshake before dispatching via ALPN */
@@ -957,6 +980,7 @@ void handle_client(int client_fd, ServerConfig *config, struct io_uring *ring)
     if (perform_nonblocking_ssl_accept(ssl, client_fd, ring) <= 0)
     {
         log_message(LOG_LEVEL_ERROR, "Nonblocking SSL handshake failed");
+        metrics_increment_tls_handshake(0);
         SSL_free(ssl);
         close(client_fd);
         return;
