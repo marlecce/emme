@@ -16,13 +16,18 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include "router.h"
+
+#define HEADER_BUFFER_SIZE 256
+#define FILEPATH_BUFFER_SIZE 512
+#define IP_BUFFER_SIZE 64
+#define CIRCUIT_BREAKER_ERROR_BODY "{\"error\":\"Service temporarily unavailable\"}"
+#define CIRCUIT_BREAKER_ERROR_LEN 38
 #include "log.h"
 #include "config.h"
 #include "backend_pool.h"
 #include "tls.h"
 #include "http2_response.h"
 #include "http2_client.h"
-#include "backend_pool.h"
 #include "metrics.h"
 #include "http_status.h"
 
@@ -109,7 +114,7 @@ static int send_simple_response(SSL *ssl, const char *status_line,
                                 const char *content_type, const char *body)
 {
     size_t body_len = body ? strlen(body) : 0;
-    char header[256];
+    char header[HEADER_BUFFER_SIZE];
     int header_len = snprintf(header, sizeof(header),
                               "%s\r\n%sContent-Length: %zu\r\n\r\n",
                               status_line,
@@ -181,7 +186,7 @@ static StaticLookupResult lookup_static_file(const HttpRequest *req, ServerConfi
                 continue;
             if (strncmp(req->path, config->routes[i].path, prefix_len) == 0)
             {
-                char filepath[512];
+                char filepath[FILEPATH_BUFFER_SIZE];
                 char root_real[PATH_MAX];
                 char file_real[PATH_MAX];
                 const char *root = config->routes[i].document_root;
@@ -254,9 +259,9 @@ static int serve_static_h2(HttpRequest *req, ServerConfig *config, Http2Response
     if (lookup == STATIC_LOOKUP_NO_ROUTE)
         return 1;
     if (lookup == STATIC_LOOKUP_NOT_FOUND)
-        return populate_http2_response(h2resp, "", 404, "Not Found", "text/plain");
+        return populate_http2_response(h2resp, "", HTTP_STATUS_NOT_FOUND, "Not Found", "text/plain");
     if (lookup == STATIC_LOOKUP_FORBIDDEN)
-        return populate_http2_response(h2resp, "", 403, "Forbidden", "text/plain");
+        return populate_http2_response(h2resp, "", HTTP_STATUS_FORBIDDEN, "Forbidden", "text/plain");
     if (lookup == STATIC_LOOKUP_ERROR)
         return -1;
 
@@ -331,7 +336,7 @@ int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
     if (lookup == STATIC_LOOKUP_ERROR)
         return -1;
 
-    char header[256];
+    char header[HEADER_BUFFER_SIZE];
     int header_len = snprintf(header, sizeof(header),
                               "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n\r\n",
                               content_type, (long)filesize);
@@ -429,7 +434,7 @@ int proxy_request_tls(HttpRequest *req, const char *raw_request, size_t req_len,
                 continue;
             if (strncmp(req->path, config->routes[i].path, prefix_len) == 0)
             {
-                char ip[64];
+                char ip[IP_BUFFER_SIZE];
                 int port;
                 if (sscanf(config->routes[i].backend, "%63[^:]:%d", ip, &port) != 2)
                     return -1;
@@ -467,21 +472,32 @@ int proxy_request_tls(HttpRequest *req, const char *raw_request, size_t req_len,
     return -1;
 }
 
+static void set_h2_response(Http2Response *h2resp, int status, const char *body, size_t body_len)
+{
+    h2_response_init(h2resp);
+    h2_response_set_status(h2resp, status, "OK");
+    h2_response_set_content_type(h2resp, "application/json");
+    h2_response_set_body(h2resp, body, body_len);
+    h2_response_finalize(h2resp);
+}
+
 static int proxy_to_backend_pooled(HttpRequest *req, Route *route, 
                                     Http2Response *h2resp, const char *body, size_t body_len)
 {
+    backend_conn_t *conn;
+    int status;
+    const char *resp_body;
+    size_t resp_len;
+
     if (!backend_pool_circuit_breaker_allow_request(route->pool)) {
         log_message(LOG_LEVEL_WARN, "Circuit breaker OPEN, rejecting request to %s",
                    route->backend);
-        h2_response_init(h2resp);
-        h2_response_set_status(h2resp, HTTP_STATUS_SERVICE_UNAVAILABLE, "Service Unavailable");
-        h2_response_set_content_type(h2resp, "application/json");
-        h2_response_set_body(h2resp, "{\"error\":\"Service temporarily unavailable\"}", 38);
-        h2_response_finalize(h2resp);
+        set_h2_response(h2resp, HTTP_STATUS_SERVICE_UNAVAILABLE, 
+                       CIRCUIT_BREAKER_ERROR_BODY, CIRCUIT_BREAKER_ERROR_LEN);
         return -1;
     }
     
-    backend_conn_t *conn = backend_pool_acquire(route->pool);
+    conn = backend_pool_acquire(route->pool);
     if (!conn) {
         log_message(LOG_LEVEL_ERROR, "Failed to acquire connection from pool");
         backend_pool_circuit_breaker_record_failure(route->pool);
@@ -491,8 +507,8 @@ static int proxy_to_backend_pooled(HttpRequest *req, Route *route,
     log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: forwarding %s %s via pooled connection", 
                 req->method, req->path);
     
-    int status = http2_client_send_request(&conn->client, req->method, req->path, 
-                                           route->backend, body, body_len);
+    status = http2_client_send_request(&conn->client, req->method, req->path, 
+                                       route->backend, body, body_len);
     if (status < 0) {
         log_message(LOG_LEVEL_ERROR, "Failed to send HTTP/2 request");
         backend_pool_mark_failure(conn);
@@ -510,14 +526,10 @@ static int proxy_to_backend_pooled(HttpRequest *req, Route *route,
         return -1;
     }
     
-    const char *resp_body = http2_client_get_response_body(&conn->client);
-    size_t resp_len = http2_client_get_response_length(&conn->client);
+    resp_body = http2_client_get_response_body(&conn->client);
+    resp_len = http2_client_get_response_length(&conn->client);
     
-    h2_response_init(h2resp);
-    h2_response_set_status(h2resp, status, "OK");
-    h2_response_set_content_type(h2resp, "application/json");
-    h2_response_set_body(h2resp, resp_body, resp_len);
-    h2_response_finalize(h2resp);
+    set_h2_response(h2resp, status, resp_body, resp_len);
     
     log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: received response status=%d, length=%zu", 
                 status, resp_len);
@@ -531,7 +543,7 @@ static int proxy_to_backend_pooled(HttpRequest *req, Route *route,
 static int proxy_to_backend_direct(HttpRequest *req, Route *route, 
                                     Http2Response *h2resp, const char *body, size_t body_len)
 {
-    char ip[64];
+    char ip[IP_BUFFER_SIZE];
     int port;
     if (sscanf(route->backend, "%63[^:]:%d", ip, &port) != 2) {
         log_message(LOG_LEVEL_ERROR, "Invalid backend address: %s", route->backend);
@@ -550,6 +562,10 @@ static int proxy_to_backend_direct(HttpRequest *req, Route *route,
     strncpy(backend_config.host, ip, sizeof(backend_config.host) - 1);
     
     http2_client_t client;
+    int status;
+    const char *resp_body;
+    size_t resp_len;
+
     if (http2_client_init(&client, &backend_config) != 0) {
         log_message(LOG_LEVEL_ERROR, "Failed to initialize HTTP/2 client");
         return -1;
@@ -568,21 +584,17 @@ static int proxy_to_backend_direct(HttpRequest *req, Route *route,
         return -1;
     }
     
-    int status = http2_client_recv_response(&client);
+    status = http2_client_recv_response(&client);
     if (status <= 0) {
         log_message(LOG_LEVEL_ERROR, "Failed to receive HTTP/2 response");
         http2_client_cleanup(&client);
         return -1;
     }
     
-    const char *resp_body = http2_client_get_response_body(&client);
-    size_t resp_len = http2_client_get_response_length(&client);
+    resp_body = http2_client_get_response_body(&client);
+    resp_len = http2_client_get_response_length(&client);
     
-    h2_response_init(h2resp);
-    h2_response_set_status(h2resp, status, "OK");
-    h2_response_set_content_type(h2resp, "application/json");
-    h2_response_set_body(h2resp, resp_body, resp_len);
-    h2_response_finalize(h2resp);
+    set_h2_response(h2resp, status, resp_body, resp_len);
     
     log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: received response status=%d, length=%zu", 
                 status, resp_len);
@@ -660,7 +672,7 @@ int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerC
     if (h2resp)
     {
         if (strcmp(req->path, "/") == 0)
-            return populate_http2_response(h2resp, root_body, 200, "OK", "text/html");
+            return populate_http2_response(h2resp, root_body, HTTP_STATUS_OK, "OK", "text/html");
         if (config)
         {
             int static_result = serve_static_h2(req, config, h2resp);
@@ -670,15 +682,13 @@ int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerC
                 return -1;
 
             if (has_matching_proxy_route(req, config)) {
-                // Try HTTP/2 proxy first
                 if (proxy_request_http2(req, config, h2resp, NULL, 0) == 0) {
                     return 0;
                 }
-                // Fallback to 501 if HTTP/2 proxy fails
-                return populate_http2_response(h2resp, "", 501, "Not Implemented", "text/plain");
+                return populate_http2_response(h2resp, "", HTTP_STATUS_NOT_IMPLEMENTED, "Not Implemented", "text/plain");
             }
         }
-        return populate_http2_response(h2resp, "", 404, "Not Found", "text/plain");
+        return populate_http2_response(h2resp, "", HTTP_STATUS_NOT_FOUND, "Not Found", "text/plain");
     }
 
     if (strcmp(req->path, "/") == 0)
