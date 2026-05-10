@@ -8,8 +8,6 @@
 int main(int argc, char **argv) {
     ServerConfig config;
     char *config_path = "config.yaml";
-    const char *env_port = getenv("EMME_PORT");
-    const char *env_log_level = getenv("EMME_LOG_LEVEL");
 
     // allow --config <file>
     for (int i = 1; i < argc; i++) {
@@ -29,34 +27,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Override config with environment variables
-    if (env_port) {
-        char *endptr;
-        long port = strtol(env_port, &endptr, 10);
-        if (*endptr == '\0' && port > 0 && port <= 65535) {
-            config.port = (int)port;
-        } else {
-            fprintf(stderr, "Warning: Invalid EMME_PORT value '%s', using config value %d\n", 
-                    env_port, config.port);
-        }
-    }
-
-    if (env_log_level) {
-        strncpy(config.log_level, env_log_level, sizeof(config.log_level) - 1);
-        config.log_level[sizeof(config.log_level) - 1] = '\0';
-    }
-
-    const char *env_shutdown_timeout = getenv("EMME_SHUTDOWN_TIMEOUT");
-    if (env_shutdown_timeout) {
-        char *endptr;
-        long timeout = strtol(env_shutdown_timeout, &endptr, 10);
-        if (*endptr == '\0' && timeout > 0 && timeout <= 300) {
-            config.shutdown_timeout_seconds = (int)timeout;
-        } else {
-            fprintf(stderr, "Warning: Invalid EMME_SHUTDOWN_TIMEOUT value '%s', using config value %d\n", 
-                    env_shutdown_timeout, config.shutdown_timeout_seconds);
-        }
-    }
+    apply_env_overrides(&config);
 
     if (log_init(&config.logging) != 0) {
         fprintf(stderr, "Error initializing logging");

@@ -46,5 +46,6 @@ typedef struct {
 } ServerConfig;
 
 int load_config(ServerConfig *config, const char *file_path);
+void apply_env_overrides(ServerConfig *config);
 
 #endif

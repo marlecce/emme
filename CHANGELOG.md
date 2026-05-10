@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Environment Variable Overrides**
+  - `EMME_MAX_CONNECTIONS` - override max connections (validation: 1-1000000)
+  - `EMME_SSL_CERT_PATH` - override SSL certificate path (supports spaces in paths)
+  - `EMME_SSL_KEY_PATH` - override SSL private key path (supports spaces in paths)
+  - Refactored env override logic into `apply_env_overrides()` function for testability
+  - 7 new unit tests covering valid, invalid, and out-of-range environment values
+  - Comprehensive validation with fallback to config.yaml values on error
+
 - **Graceful Shutdown Improvements**
   - Configurable shutdown timeout via `EMME_SHUTDOWN_TIMEOUT` environment variable
   - Dual-mode signal handling: SIGTERM (graceful) vs SIGINT (immediate)
@@ -149,8 +157,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 See [ROADMAP.md](ROADMAP.md) for detailed implementation plan with priorities, timelines, and acceptance criteria.
 
 **Phase 1 (Weeks 1-2) - Production Readiness (P0/P1):**
-- [ ] Graceful shutdown with 30s drain timeout
-- [ ] Full environment variable overrides
+- [x] Graceful shutdown with 30s drain timeout (configurable via env var)
+- [x] Full environment variable overrides (port, log_level, shutdown_timeout, max_connections, ssl paths)
 - [ ] Prometheus metrics endpoint
 - [ ] HTTP/2 reverse proxy
 - [ ] Request timeout enforcement

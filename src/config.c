@@ -638,3 +638,60 @@ cleanup:
         fclose(fh);
     return rc;
 }
+
+void apply_env_overrides(ServerConfig *config)
+{
+    const char *env_port = getenv("EMME_PORT");
+    if (env_port) {
+        char *endptr;
+        long port = strtol(env_port, &endptr, 10);
+        if (*endptr == '\0' && port > 0 && port <= 65535) {
+            config->port = (int)port;
+        } else {
+            fprintf(stderr, "Warning: Invalid EMME_PORT value '%s', using config value %d\n", 
+                    env_port, config->port);
+        }
+    }
+
+    const char *env_log_level = getenv("EMME_LOG_LEVEL");
+    if (env_log_level) {
+        strncpy(config->log_level, env_log_level, sizeof(config->log_level) - 1);
+        config->log_level[sizeof(config->log_level) - 1] = '\0';
+    }
+
+    const char *env_shutdown_timeout = getenv("EMME_SHUTDOWN_TIMEOUT");
+    if (env_shutdown_timeout) {
+        char *endptr;
+        long timeout = strtol(env_shutdown_timeout, &endptr, 10);
+        if (*endptr == '\0' && timeout > 0 && timeout <= 300) {
+            config->shutdown_timeout_seconds = (int)timeout;
+        } else {
+            fprintf(stderr, "Warning: Invalid EMME_SHUTDOWN_TIMEOUT value '%s', using config value %d\n", 
+                    env_shutdown_timeout, config->shutdown_timeout_seconds);
+        }
+    }
+
+    const char *env_max_connections = getenv("EMME_MAX_CONNECTIONS");
+    if (env_max_connections) {
+        char *endptr;
+        long max_conn = strtol(env_max_connections, &endptr, 10);
+        if (*endptr == '\0' && max_conn > 0 && max_conn <= 1000000) {
+            config->max_connections = (int)max_conn;
+        } else {
+            fprintf(stderr, "Warning: Invalid EMME_MAX_CONNECTIONS value '%s', using config value %d\n", 
+                    env_max_connections, config->max_connections);
+        }
+    }
+
+    const char *env_ssl_cert = getenv("EMME_SSL_CERT_PATH");
+    if (env_ssl_cert) {
+        strncpy(config->ssl.certificate, env_ssl_cert, sizeof(config->ssl.certificate) - 1);
+        config->ssl.certificate[sizeof(config->ssl.certificate) - 1] = '\0';
+    }
+
+    const char *env_ssl_key = getenv("EMME_SSL_KEY_PATH");
+    if (env_ssl_key) {
+        strncpy(config->ssl.private_key, env_ssl_key, sizeof(config->ssl.private_key) - 1);
+        config->ssl.private_key[sizeof(config->ssl.private_key) - 1] = '\0';
+    }
+}
