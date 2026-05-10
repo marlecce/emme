@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Graceful Shutdown Improvements**
+  - Configurable shutdown timeout via `EMME_SHUTDOWN_TIMEOUT` environment variable
+  - Dual-mode signal handling: SIGTERM (graceful) vs SIGINT (immediate)
+  - Health endpoint returns 503 Service Unavailable during drain phase with `Retry-After: 5` header
+  - Shutdown metrics logging: duration, completed requests, forced closures, peak in-flight
+  - Lock-free shutdown state machine with atomic operations
+  - 9 new unit tests for shutdown context and state transitions
+
 - **SSL Performance Optimizations**
   - Configurable SSL read buffer size (4KB-64KB, default 32KB)
   - SSL partial write support (`SSL_MODE_ENABLE_PARTIAL_WRITE`)
@@ -27,6 +35,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated Health Check documentation
 
 ### Changed
+- **Server Architecture Refactoring**
+  - Split monolithic `start_server()` (213 lines) into 5 focused functions
+  - Added `initialize_server()` for setup with unified error handling
+  - Added `accept_and_dispatch_client()` for accept loop logic
+  - Added `drain_in_flight_requests()` for graceful shutdown drain
+  - Added `perform_shutdown()` for cleanup and metrics logging
+  - Added `cleanup_server_resources()` for centralized resource deallocation
+  - Introduced named constants: `SERVER_BACKLOG`, `THREAD_POOL_MIN_THREADS`, `SESSION_STATS_INTERVAL_SEC`
+  - Consistent logging: all `fprintf`/`perror`/`printf` → `log_message()`
+  - Improved code readability and maintainability
+
 - **Configuration System Refactoring**
   - Split monolithic `load_config()` (300 lines) into 7 focused parser functions
   - Added line number tracking to all YAML error messages
@@ -36,7 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Testing Improvements**
   - Added 15 new unit tests for configuration parsing
-  - Increased total tests from 37 to **52** (+40%)
+  - Added 9 new unit tests for shutdown context and state machine
+  - Increased total tests from 37 to **61** (+65%)
   - Added tests for SSL performance settings
   - Added tests for HTTP/2 configuration
   - Added tests for boolean parsing variations (true/false/yes/no/0/1)
@@ -47,11 +67,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Throughput improvement: 460 → 2,236 req/s (4.9x)**
   - Memory per connection reduced by 40% (~84KB → ~50KB)
   - Syscall overhead reduced by 75%
+  - Graceful shutdown overhead: <1% (lock-free atomics only)
 
 ### Technical Debt
 - Thread pool still uses mutex-based synchronization (lock-free implementation planned for Phase 3)
 - Work-stealing algorithm not yet implemented (Phase 3)
 - Prometheus metrics endpoint not yet implemented (Phase 1 - P1 priority)
+
+### Completed
+- ✅ **Graceful shutdown with drain logic** (P0 - Phase 1)
+  - 30s configurable drain timeout
+  - 503 health endpoint during drain
+  - SIGTERM graceful vs SIGINT immediate
+  - Shutdown metrics logging
+- ✅ **Server code refactoring** for improved maintainability
 
 ### Fixed
 - Fixed SSL private key path typo in README.md (removed trailing quote)

@@ -36,6 +36,7 @@ typedef struct {
 typedef struct {
     int port;
     int max_connections;
+    int shutdown_timeout_seconds;
     char log_level[MAX_LOG_LEVEL];
     int route_count;
     Route routes[MAX_ROUTES];

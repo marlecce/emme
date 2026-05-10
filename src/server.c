@@ -37,6 +37,11 @@
 
 #define H2_POLL_TIMEOUT_MS 100
 
+#define SERVER_BACKLOG 2048
+#define THREAD_POOL_MIN_THREADS 32
+#define THREAD_POOL_MAX_THREADS_RATIO 1
+#define SESSION_STATS_INTERVAL_SEC 60
+
 typedef struct {
     SSL *ssl;
     ServerConfig *config;
@@ -256,29 +261,306 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
 
 SSL_CTX *ssl_ctx = NULL;
 static struct io_uring global_ring;
-static volatile sig_atomic_t g_shutdown = 0;
 static int g_server_fd = -1;
-static _Atomic size_t g_in_flight_requests = 0;
-static struct timespec g_shutdown_deadline;
-static _Atomic int g_shutdown_deadline_set = 0;
+
+shutdown_context_t g_shutdown_ctx = {0};
 
 static void log_io_uring_error(const char *context, int ret)
 {
     log_message(LOG_LEVEL_ERROR, "%s: %s", context, strerror(-ret));
 }
 
-static void handle_signal(int sig)
+static void client_task(void *arg);
+void handle_signal(int sig);
+
+static void cleanup_server_resources(ThreadPool *pool, int server_fd)
 {
-    (void)sig;
-    if (!atomic_exchange(&g_shutdown, 1)) {
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        g_shutdown_deadline.tv_sec = now.tv_sec + 30;
-        g_shutdown_deadline.tv_nsec = now.tv_nsec;
-        atomic_store(&g_shutdown_deadline_set, 1);
-        log_message(LOG_LEVEL_INFO, "Graceful shutdown initiated (SIGTERM/SIGINT). Draining %zu in-flight requests with 30s timeout",
-                    atomic_load(&g_in_flight_requests));
+    if (pool) {
+        thread_pool_destroy(pool);
     }
+    if (server_fd >= 0) {
+        close(server_fd);
+        g_server_fd = -1;
+    }
+    io_uring_queue_exit(&global_ring);
+    if (ssl_ctx) {
+        cleanup_ssl_context(ssl_ctx);
+        ssl_ctx = NULL;
+    }
+}
+
+static int initialize_server(ServerConfig *config, ThreadPool **out_pool)
+{
+    int ring_ret;
+    
+    if (!config || !out_pool) {
+        log_message(LOG_LEVEL_ERROR, "Invalid parameters to initialize_server");
+        return -1;
+    }
+    
+    memset(&g_shutdown_ctx, 0, sizeof(g_shutdown_ctx));
+    g_shutdown_ctx.timeout_seconds = config->shutdown_timeout_seconds;
+    atomic_store(&g_shutdown_ctx.state, SHUTDOWN_STATE_RUNNING);
+    
+    ring_ret = io_uring_queue_init(QUEUE_DEPTH * 2, &global_ring, 0);
+    if (ring_ret != 0) {
+        log_io_uring_error("io_uring_queue_init", ring_ret);
+        return -1;
+    }
+    
+    g_server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_server_fd == -1) {
+        log_message(LOG_LEVEL_ERROR, "Socket creation failed: %s", strerror(errno));
+        io_uring_queue_exit(&global_ring);
+        return -1;
+    }
+    
+    int enable = 1;
+    if (setsockopt(g_server_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1) {
+        log_message(LOG_LEVEL_ERROR, "setsockopt(SO_REUSEADDR) failed: %s", strerror(errno));
+        close(g_server_fd);
+        g_server_fd = -1;
+        io_uring_queue_exit(&global_ring);
+        return -1;
+    }
+    
+    signal(SIGTERM, handle_signal);
+    signal(SIGINT, handle_signal);
+    
+    struct sockaddr_in server_addr = {0};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(config->port);
+    
+    if (bind(g_server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+        log_message(LOG_LEVEL_ERROR, "Bind error on port %d: %s", config->port, strerror(errno));
+        close(g_server_fd);
+        g_server_fd = -1;
+        io_uring_queue_exit(&global_ring);
+        return -1;
+    }
+    
+    if (listen(g_server_fd, SERVER_BACKLOG) == -1) {
+        log_message(LOG_LEVEL_ERROR, "Listen error: %s", strerror(errno));
+        close(g_server_fd);
+        g_server_fd = -1;
+        io_uring_queue_exit(&global_ring);
+        return -1;
+    }
+    
+    ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key, config);
+    if (!ssl_ctx) {
+        log_message(LOG_LEVEL_ERROR, "Failed to create SSL context");
+        close(g_server_fd);
+        g_server_fd = -1;
+        io_uring_queue_exit(&global_ring);
+        return -1;
+    }
+    
+    size_t max_threads = config->max_connections > 0 ? (size_t)config->max_connections : 32;
+    size_t initial_threads = max_threads < THREAD_POOL_MIN_THREADS ? max_threads : THREAD_POOL_MIN_THREADS;
+    
+    *out_pool = thread_pool_create(initial_threads, max_threads);
+    if (!*out_pool) {
+        log_message(LOG_LEVEL_ERROR, "Failed to create thread pool");
+        close(g_server_fd);
+        g_server_fd = -1;
+        io_uring_queue_exit(&global_ring);
+        cleanup_ssl_context(ssl_ctx);
+        ssl_ctx = NULL;
+        return -1;
+    }
+    
+    log_message(LOG_LEVEL_INFO, "Server initialized on port %d (max_connections=%zu)", 
+                config->port, max_threads);
+    return 0;
+}
+
+static int accept_and_dispatch_client(ThreadPool *pool, ServerConfig *config)
+{
+    struct io_uring_sqe *sqe;
+    struct sockaddr_in client_addr;
+    struct io_uring_cqe *cqe;
+    socklen_t client_len = sizeof(client_addr);
+    int client_fd;
+    int submit_ret, wait_ret;
+    shutdown_state_t state;
+    int flags;
+    ClientTaskData *task_data;
+    
+    sqe = io_uring_get_sqe(&global_ring);
+    if (!sqe) {
+        log_message(LOG_LEVEL_ERROR, "Failed to get SQE for accept");
+        return -1;
+    }
+    
+    io_uring_prep_accept(sqe, g_server_fd, (struct sockaddr *)&client_addr, &client_len, 0);
+    
+    submit_ret = io_uring_submit(&global_ring);
+    if (submit_ret < 0) {
+        log_io_uring_error("io_uring_submit (accept)", submit_ret);
+        return -1;
+    }
+    
+    wait_ret = io_uring_wait_cqe(&global_ring, &cqe);
+    if (wait_ret < 0) {
+        state = atomic_load(&g_shutdown_ctx.state);
+        if (state != SHUTDOWN_STATE_RUNNING &&
+            (-wait_ret == EINTR || -wait_ret == EBADF || -wait_ret == ENXIO)) {
+            return 1;
+        }
+        log_io_uring_error("io_uring_wait_cqe (accept)", wait_ret);
+        return -1;
+    }
+    
+    client_fd = cqe->res;
+    io_uring_cqe_seen(&global_ring, cqe);
+    
+    state = atomic_load(&g_shutdown_ctx.state);
+    if (state != SHUTDOWN_STATE_RUNNING) {
+        if (client_fd >= 0) {
+            close(client_fd);
+        }
+        return 1;
+    }
+    
+    if (client_fd < 0) {
+        return (state != SHUTDOWN_STATE_RUNNING) ? 1 : 0;
+    }
+    
+    flags = fcntl(client_fd, F_GETFL, 0);
+    if (flags == -1) {
+        log_message(LOG_LEVEL_ERROR, "fcntl(F_GETFL) failed: %s", strerror(errno));
+        close(client_fd);
+        return 0;
+    }
+    
+    if (fcntl(client_fd, F_SETFL, flags & ~O_NONBLOCK) == -1) {
+        log_message(LOG_LEVEL_ERROR, "fcntl(F_SETFL) failed: %s", strerror(errno));
+        close(client_fd);
+        return 0;
+    }
+    
+    task_data = malloc(sizeof(ClientTaskData));
+    if (!task_data) {
+        log_message(LOG_LEVEL_ERROR, "Failed to allocate client task data: %s", strerror(errno));
+        close(client_fd);
+        return 0;
+    }
+    
+    task_data->client_fd = client_fd;
+    task_data->config = config;
+    
+    atomic_fetch_add(&g_shutdown_ctx.in_flight_requests, 1);
+    
+    if (!thread_pool_add_task(pool, client_task, task_data)) {
+        log_message(LOG_LEVEL_ERROR, "Failed to add task to thread pool");
+        atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
+        free(task_data);
+        close(client_fd);
+    }
+    
+    return 0;
+}
+
+static void drain_in_flight_requests(void)
+{
+    struct timespec now;
+    time_t last_log_time = 0;
+    size_t remaining, peak;
+    long drain_duration_ms;
+    
+    clock_gettime(CLOCK_REALTIME, &now);
+    
+    while (atomic_load(&g_shutdown_ctx.in_flight_requests) > 0) {
+        clock_gettime(CLOCK_REALTIME, &now);
+        
+        if (now.tv_sec > g_shutdown_ctx.deadline.tv_sec ||
+            (now.tv_sec == g_shutdown_ctx.deadline.tv_sec && 
+             now.tv_nsec > g_shutdown_ctx.deadline.tv_nsec)) {
+            
+            atomic_store(&g_shutdown_ctx.state, SHUTDOWN_STATE_FORCED);
+            
+            remaining = atomic_load(&g_shutdown_ctx.in_flight_requests);
+            log_message(LOG_LEVEL_WARN, 
+                        "Graceful shutdown timeout (%ds) reached. Forcing shutdown with %zu in-flight requests",
+                        g_shutdown_ctx.timeout_seconds, remaining);
+            break;
+        }
+        
+        if (now.tv_sec != last_log_time) {
+            log_message(LOG_LEVEL_INFO, 
+                        "Draining: %zu requests still in-flight...",
+                        atomic_load(&g_shutdown_ctx.in_flight_requests));
+            last_log_time = now.tv_sec;
+        }
+        
+        struct timespec sleep_time = {.tv_sec = 0, .tv_nsec = 100000000};
+        nanosleep(&sleep_time, NULL);
+    }
+    
+    clock_gettime(CLOCK_REALTIME, &g_shutdown_ctx.metrics.end_time);
+    
+    peak = atomic_load(&g_shutdown_ctx.metrics.peak_in_flight);
+    remaining = atomic_load(&g_shutdown_ctx.in_flight_requests);
+    atomic_store(&g_shutdown_ctx.metrics.completed, peak - remaining);
+    atomic_store(&g_shutdown_ctx.metrics.forced, remaining);
+    
+    drain_duration_ms = 
+        (g_shutdown_ctx.metrics.end_time.tv_sec - g_shutdown_ctx.metrics.start_time.tv_sec) * 1000 +
+        (g_shutdown_ctx.metrics.end_time.tv_nsec - g_shutdown_ctx.metrics.start_time.tv_nsec) / 1000000;
+    
+    log_message(LOG_LEVEL_INFO, 
+                "Graceful shutdown complete. "
+                "Duration: %ldms | Completed: %zu | Forced: %zu | Peak: %zu",
+                drain_duration_ms,
+                atomic_load(&g_shutdown_ctx.metrics.completed),
+                atomic_load(&g_shutdown_ctx.metrics.forced),
+                atomic_load(&g_shutdown_ctx.metrics.peak_in_flight));
+}
+
+static void perform_shutdown(ThreadPool *pool, int server_fd)
+{
+    shutdown_state_t state = atomic_load(&g_shutdown_ctx.state);
+    
+    if (state == SHUTDOWN_STATE_DRAINING) {
+        drain_in_flight_requests();
+    } else if (state == SHUTDOWN_STATE_FORCED) {
+        log_message(LOG_LEVEL_INFO, "Immediate shutdown completed (SIGINT)");
+    }
+    
+    cleanup_server_resources(pool, server_fd);
+    
+    log_session_stats(ssl_ctx);
+}
+
+void handle_signal(int sig)
+{
+    shutdown_state_t old_state = atomic_load(&g_shutdown_ctx.state);
+    if (old_state != SHUTDOWN_STATE_RUNNING) {
+        return;
+    }
+    
+    if (sig == SIGINT) {
+        atomic_store(&g_shutdown_ctx.state, SHUTDOWN_STATE_FORCED);
+        log_message(LOG_LEVEL_WARN, "SIGINT received - immediate shutdown (development mode)");
+    } else {
+        atomic_store(&g_shutdown_ctx.state, SHUTDOWN_STATE_DRAINING);
+        
+        clock_gettime(CLOCK_REALTIME, &g_shutdown_ctx.deadline);
+        g_shutdown_ctx.deadline.tv_sec += g_shutdown_ctx.timeout_seconds;
+        
+        atomic_store(&g_shutdown_ctx.metrics.peak_in_flight,
+                     atomic_load(&g_shutdown_ctx.in_flight_requests));
+        clock_gettime(CLOCK_REALTIME, &g_shutdown_ctx.metrics.start_time);
+        
+        log_message(LOG_LEVEL_INFO, 
+                    "SIGTERM received - graceful shutdown initiated. "
+                    "Draining %zu in-flight requests with %ds timeout",
+                    atomic_load(&g_shutdown_ctx.in_flight_requests),
+                    g_shutdown_ctx.timeout_seconds);
+    }
+    
     if (g_server_fd >= 0) {
         shutdown(g_server_fd, SHUT_RD);
     }
@@ -644,7 +926,7 @@ void client_task(void *arg)
             }
             close(data->client_fd);
             free(data);
-            atomic_fetch_sub(&g_in_flight_requests, 1);
+            atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
             return;
         }
     }
@@ -653,7 +935,7 @@ void client_task(void *arg)
     free(local_ring);
     local_ring = NULL;
     free(data);
-    atomic_fetch_sub(&g_in_flight_requests, 1);
+    atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
 }
 
 /* Main per-connection handler; performs nonblocking TLS handshake before dispatching via ALPN */
@@ -700,178 +982,41 @@ void handle_client(int client_fd, ServerConfig *config, struct io_uring *ring)
 /* Main server accept loop using a global io_uring instance */
 int start_server(ServerConfig *config)
 {
-    int server_fd, client_fd;
-    struct sockaddr_in server_addr, client_addr;
-    int ring_ret;
-    size_t max_threads;
-    size_t initial_threads;
-
-    g_shutdown = 0;
-    memset(&server_addr, 0, sizeof(server_addr));
-    memset(&client_addr, 0, sizeof(client_addr));
-
-    ring_ret = io_uring_queue_init(QUEUE_DEPTH * 2, &global_ring, 0);
-    if (ring_ret != 0)
-    {
-        fprintf(stderr, "global io_uring_queue_init failed: %s\n", strerror(-ring_ret));
-        return -1;
-    }
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == -1)
-    {
-        perror("Socket creation error");
-        io_uring_queue_exit(&global_ring);
-        return -1;
-    }
-    int enable = 1;
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) == -1)
-    {
-        perror("setsockopt(SO_REUSEADDR) failed");
-        close(server_fd);
-        io_uring_queue_exit(&global_ring);
-        return -1;
-    }
-    g_server_fd = server_fd;
-    signal(SIGTERM, handle_signal);
-    signal(SIGINT, handle_signal);
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(config->port);
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1)
-    {
-        perror("Bind error");
-        close(server_fd);
-        io_uring_queue_exit(&global_ring);
-        return -1;
-    }
-    if (listen(server_fd, 2048) == -1)
-    {
-        perror("Listen error");
-        close(server_fd);
-        io_uring_queue_exit(&global_ring);
-        return -1;
-    }
-    ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key, config);
-    if (!ssl_ctx)
-    {
-        close(server_fd);
-        io_uring_queue_exit(&global_ring);
-        return -1;
-    }
-
-    max_threads = config->max_connections > 0 ? (size_t)config->max_connections : 32;
-    initial_threads = max_threads < 32 ? max_threads : 32;
-
-    ThreadPool *pool = thread_pool_create(initial_threads, max_threads);
-    if (!pool)
-    {
-        fprintf(stderr, "Failed to create thread pool\n");
-        close(server_fd);
-        io_uring_queue_exit(&global_ring);
-        cleanup_ssl_context(ssl_ctx);
-        return -1;
-    }
-    printf("Emme listening on port %d...\n", config->port);
-    
+    ThreadPool *pool = NULL;
     time_t last_stats_log = time(NULL);
-    while (!g_shutdown)
-    {
+    int accept_result;
+    
+    if (!config) {
+        log_message(LOG_LEVEL_ERROR, "start_server: config parameter is NULL");
+        return -1;
+    }
+    
+    if (initialize_server(config, &pool) != 0) {
+        log_message(LOG_LEVEL_ERROR, "Server initialization failed");
+        return -1;
+    }
+    
+    log_message(LOG_LEVEL_INFO, "Emme listening on port %d...", config->port);
+    
+    while (atomic_load(&g_shutdown_ctx.state) == SHUTDOWN_STATE_RUNNING) {
         time_t now = time(NULL);
-        if (now - last_stats_log > 60)
-        {
+        
+        if (now - last_stats_log >= SESSION_STATS_INTERVAL_SEC) {
             log_session_stats(ssl_ctx);
             last_stats_log = now;
         }
         
-        struct io_uring_sqe *sqe = io_uring_get_sqe(&global_ring);
-        socklen_t client_len = sizeof(client_addr);
-
-        if (!sqe)
-        {
-            fprintf(stderr, "Failed to get SQE for accept\n");
-            break;
-        }
-        io_uring_prep_accept(sqe, server_fd, (struct sockaddr *)&client_addr, &client_len, 0);
-        int submit_ret = io_uring_submit(&global_ring);
-        if (submit_ret < 0)
-        {
-            fprintf(stderr, "io_uring_submit (accept) failed: %s\n", strerror(-submit_ret));
-            break;
-        }
-        struct io_uring_cqe *cqe;
-        int wait_ret = io_uring_wait_cqe(&global_ring, &cqe);
-        if (wait_ret < 0)
-        {
-            if (g_shutdown &&
-                (-wait_ret == EINTR || -wait_ret == EBADF || -wait_ret == ENXIO))
-                break;
-            fprintf(stderr, "io_uring_wait_cqe (accept) failed: %s\n", strerror(-wait_ret));
-            break;
-        }
-        client_fd = cqe->res;
-        io_uring_cqe_seen(&global_ring, cqe);
-        if (g_shutdown)
-        {
-            if (client_fd >= 0)
-                close(client_fd);
-            break;
-        }
-        if (client_fd < 0)
-        {
-            if (g_shutdown)
-                break;
-            continue;
-        }
-        int flags = fcntl(client_fd, F_GETFL, 0);
-        fcntl(client_fd, F_SETFL, flags & ~O_NONBLOCK);
-        ClientTaskData *task_data = malloc(sizeof(ClientTaskData));
-        if (!task_data)
-        {
-            perror("Failed to allocate memory for client task");
-            close(client_fd);
-            continue;
-        }
-        task_data->client_fd = client_fd;
-        task_data->config = config;
-        atomic_fetch_add(&g_in_flight_requests, 1);
-        if (!thread_pool_add_task(pool, client_task, task_data))
-        {
-            fprintf(stderr, "Failed to add task to thread pool\n");
-            atomic_fetch_sub(&g_in_flight_requests, 1);
-            free(task_data);
-            close(client_fd);
-        }
-    }
-    thread_pool_destroy(pool);
-    close(server_fd);
-    g_server_fd = -1;
-    
-    if (atomic_load(&g_shutdown_deadline_set)) {
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
+        accept_result = accept_and_dispatch_client(pool, config);
         
-        while (atomic_load(&g_in_flight_requests) > 0) {
-            if (now.tv_sec > g_shutdown_deadline.tv_sec ||
-                (now.tv_sec == g_shutdown_deadline.tv_sec && 
-                 now.tv_nsec > g_shutdown_deadline.tv_nsec)) {
-                log_message(LOG_LEVEL_WARN, "Graceful shutdown timeout reached. Forcing shutdown with %zu in-flight requests",
-                            atomic_load(&g_in_flight_requests));
-                break;
-            }
-            
-            log_message(LOG_LEVEL_INFO, "Waiting for %zu in-flight requests to complete...",
-                        atomic_load(&g_in_flight_requests));
-            struct timespec sleep_time = {.tv_sec = 0, .tv_nsec = 100000000};
-            nanosleep(&sleep_time, NULL);
-            clock_gettime(CLOCK_REALTIME, &now);
-        }
-        
-        if (atomic_load(&g_in_flight_requests) == 0) {
-            log_message(LOG_LEVEL_INFO, "Graceful shutdown complete. All requests drained.");
+        if (accept_result == 1) {
+            break;
+        } else if (accept_result < 0) {
+            log_message(LOG_LEVEL_ERROR, "Accept loop error, shutting down");
+            break;
         }
     }
     
-    io_uring_queue_exit(&global_ring);
-    cleanup_ssl_context(ssl_ctx);
+    perform_shutdown(pool, g_server_fd);
+    
     return 0;
 }

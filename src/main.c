@@ -46,6 +46,18 @@ int main(int argc, char **argv) {
         config.log_level[sizeof(config.log_level) - 1] = '\0';
     }
 
+    const char *env_shutdown_timeout = getenv("EMME_SHUTDOWN_TIMEOUT");
+    if (env_shutdown_timeout) {
+        char *endptr;
+        long timeout = strtol(env_shutdown_timeout, &endptr, 10);
+        if (*endptr == '\0' && timeout > 0 && timeout <= 300) {
+            config.shutdown_timeout_seconds = (int)timeout;
+        } else {
+            fprintf(stderr, "Warning: Invalid EMME_SHUTDOWN_TIMEOUT value '%s', using config value %d\n", 
+                    env_shutdown_timeout, config.shutdown_timeout_seconds);
+        }
+    }
+
     if (log_init(&config.logging) != 0) {
         fprintf(stderr, "Error initializing logging");
         exit(EXIT_FAILURE);

@@ -82,6 +82,7 @@ static void set_config_defaults(ServerConfig *config)
     memset(config, 0, sizeof(*config));
     config->port = 8443;
     config->max_connections = 100;
+    config->shutdown_timeout_seconds = 30;
     snprintf(config->log_level, sizeof(config->log_level), "info");
 
     config->logging.level = LOG_LEVEL_DEBUG;
@@ -355,6 +356,7 @@ static int parse_server_section(ConfigParser *ctx, yaml_node_t *node)
 
     PARSE_FIELD("port", get_yaml_int_in_range, 1, 65535, &ctx->config->port);
     PARSE_FIELD("max_connections", get_yaml_int_in_range, 1, 1000000, &ctx->config->max_connections);
+    PARSE_FIELD("shutdown_timeout_seconds", get_yaml_int_in_range, 1, 300, &ctx->config->shutdown_timeout_seconds);
     PARSE_STRING("log_level", ctx->config->log_level, sizeof(ctx->config->log_level));
 
     return 0;

@@ -12,6 +12,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include "router.h"
+#include "config.h"
+#include "http_parser.h"
+#include "tls.h"
+#include "log.h"
+#include "server.h"
+#include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/sendfile.h>
@@ -38,6 +47,31 @@ static int send_health_response(SSL *ssl, Http2Response *h2resp)
 {
     const char *body = "{\"status\":\"ok\"}";
     size_t body_len = strlen(body);
+    shutdown_state_t state = atomic_load(&g_shutdown_ctx.state);
+    
+    if (state == SHUTDOWN_STATE_DRAINING) {
+        const char *draining_body = "{\"status\":\"draining\",\"reason\":\"graceful_shutdown\"}";
+        size_t draining_len = strlen(draining_body);
+        
+        if (h2resp) {
+            h2_response_init(h2resp);
+            h2_response_set_status(h2resp, 503, "Service Unavailable");
+            h2_response_set_content_type(h2resp, "application/json");
+            h2_response_set_body(h2resp, draining_body, draining_len);
+            h2_response_finalize(h2resp);
+        } else {
+            const char *headers =
+                "HTTP/1.1 503 Service Unavailable\r\n"
+                "Content-Type: application/json\r\n"
+                "Retry-After: 5\r\n"
+                "Content-Length: 53\r\n"
+                "\r\n";
+            ssl_write_all(ssl, headers, strlen(headers));
+            ssl_write_all(ssl, draining_body, draining_len);
+        }
+        
+        return 0;
+    }
     
     if (h2resp) {
         h2_response_init(h2resp);

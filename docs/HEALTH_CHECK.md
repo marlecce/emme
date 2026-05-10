@@ -22,6 +22,21 @@ GET /health
 {"status":"ok"}
 ```
 
+### Draining - Graceful Shutdown (HTTP 503)
+
+During graceful shutdown (SIGTERM), the health endpoint returns 503 to signal load balancers to stop sending new traffic:
+
+```json
+{"status":"draining","reason":"graceful_shutdown"}
+```
+
+**Headers**:
+```
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+Retry-After: 5
+```
+
 ## HTTP Headers
 
 ```
@@ -97,9 +112,20 @@ modules:
 
 The health check is minimal by design:
 - No metrics tracking overhead
-- No atomic operations or counters
+- Checks shutdown state atomically (lock-free)
+- Returns 503 during graceful shutdown drain phase
 - Just proves the server can accept and respond to requests
 - Works over both HTTP/1.1 and HTTP/2
+
+### Shutdown State Integration
+
+The health endpoint integrates with the graceful shutdown system:
+
+1. **Normal Operation** (`SHUTDOWN_STATE_RUNNING`): Returns 200 OK
+2. **Graceful Shutdown** (`SHUTDOWN_STATE_DRAINING`): Returns 503 Service Unavailable
+3. **Immediate Shutdown** (`SHUTDOWN_STATE_FORCED`): Server not accepting connections
+
+This enables load balancers to detect draining servers and route traffic away before shutdown completes.
 
 ## Security Considerations
 
@@ -155,4 +181,25 @@ telnet localhost 8443
 
 - [Deployment Guide](DEPLOYMENT.md) - Production deployment and load balancer integration
 - [Monitoring Setup](MONITORING.md) - Prometheus and Grafana integration
+- [Graceful Shutdown](../ROADMAP.md#p0-graceful-shutdown--drain-logic) - Shutdown behavior and drain logic
 - [README](../README.md) - General project documentation
+
+## Graceful Shutdown Behavior
+
+During graceful shutdown (triggered by SIGTERM):
+
+1. Server stops accepting new connections
+2. Health endpoint immediately returns 503
+3. In-flight requests complete normally (max 30s)
+4. Load balancers detect 503 and route traffic elsewhere
+5. After drain completes, server exits cleanly
+
+**Example shutdown log**:
+```
+SIGTERM received - graceful shutdown initiated. Draining 0 in-flight requests with 30s timeout
+Graceful shutdown complete. Duration: 2ms | Completed: 0 | Forced: 0 | Peak: 0
+```
+
+**Configuration**:
+- Timeout: `shutdown_timeout_seconds` in config.yaml (default: 30)
+- Override: `EMME_SHUTDOWN_TIMEOUT=10 ./emme` (1-300 seconds)
