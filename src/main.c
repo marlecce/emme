@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string.h>
 #include "server.h"
 #include "config.h"
 #include "log.h"
 #include "metrics.h"
+#include "backend_pool.h"
 
 #define DEFAULT_METRICS_PORT 9090
 #define MAX_PORT_NUMBER 65535
@@ -34,6 +36,41 @@ int main(int argc, char **argv) {
     if (log_init(&config.logging) != 0) {
         fprintf(stderr, "Error initializing logging\n");
         exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i < config.route_count; i++) {
+        Route *route = &config.routes[i];
+        if (route->http2_enabled && route->backend[0] != '\0') {
+            char host[256];
+            int port;
+            if (parse_backend_url(route->backend, host, sizeof(host), &port) == 0) {
+                route->pool = backend_pool_create(host, port, route->tls_enabled, 
+                                                   route->tls_verify, 
+                                                   route->connection_pool.size);
+                if (route->pool) {
+                    log_message(LOG_LEVEL_INFO, "Created connection pool for %s (size=%d)",
+                               route->backend, route->connection_pool.size);
+                    
+                    if (route->health_check.enabled) {
+                        if (backend_pool_start_health_checker(route->pool, 
+                                                              &route->health_check) == 0) {
+                            log_message(LOG_LEVEL_INFO, "Health checker started for %s",
+                                       route->backend);
+                        }
+                    }
+                    
+                    if (route->circuit_breaker.enabled) {
+                        if (backend_pool_init_circuit_breaker(route->pool, 
+                                                              &route->circuit_breaker) == 0) {
+                            log_message(LOG_LEVEL_INFO, "Circuit breaker initialized for %s",
+                                       route->backend);
+                        }
+                    }
+                } else {
+                    log_message(LOG_LEVEL_ERROR, "Failed to create pool for %s", route->backend);
+                }
+            }
+        }
     }
 
     metrics_init();

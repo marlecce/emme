@@ -78,6 +78,50 @@ void metrics_init(void)
     g_metrics.io_uring_cqe_depth.metadata.help = "io_uring completion queue depth";
     g_metrics.io_uring_cqe_depth.metadata.type = "gauge";
     
+    g_metrics.backend_pool_active.metadata.name = "emme_backend_pool_active_connections";
+    g_metrics.backend_pool_active.metadata.help = "Number of active backend connections";
+    g_metrics.backend_pool_active.metadata.type = "gauge";
+    
+    g_metrics.backend_pool_idle.metadata.name = "emme_backend_pool_idle_connections";
+    g_metrics.backend_pool_idle.metadata.help = "Number of idle backend connections";
+    g_metrics.backend_pool_idle.metadata.type = "gauge";
+    
+    g_metrics.backend_pool_healthy.metadata.name = "emme_backend_pool_healthy_connections";
+    g_metrics.backend_pool_healthy.metadata.help = "Number of healthy backend connections";
+    g_metrics.backend_pool_healthy.metadata.type = "gauge";
+    
+    g_metrics.health_checker_total_checks.metadata.name = "emme_health_checker_total_checks";
+    g_metrics.health_checker_total_checks.metadata.help = "Total health checks performed";
+    g_metrics.health_checker_total_checks.metadata.type = "gauge";
+    
+    g_metrics.health_checker_failed_checks.metadata.name = "emme_health_checker_failed_checks";
+    g_metrics.health_checker_failed_checks.metadata.help = "Total failed health checks";
+    g_metrics.health_checker_failed_checks.metadata.type = "gauge";
+    
+    g_metrics.health_checker_health_status.metadata.name = "emme_health_checker_health_status";
+    g_metrics.health_checker_health_status.metadata.help = "Backend health status (0=unknown, 1=healthy, 2=unhealthy)";
+    g_metrics.health_checker_health_status.metadata.type = "gauge";
+    
+    g_metrics.health_checker_last_check_time.metadata.name = "emme_health_checker_last_check_time_seconds";
+    g_metrics.health_checker_last_check_time.metadata.help = "Unix timestamp of last health check";
+    g_metrics.health_checker_last_check_time.metadata.type = "gauge";
+    
+    g_metrics.circuit_breaker_state.metadata.name = "emme_circuit_breaker_state";
+    g_metrics.circuit_breaker_state.metadata.help = "Circuit breaker state (0=closed, 1=open, 2=half-open)";
+    g_metrics.circuit_breaker_state.metadata.type = "gauge";
+    
+    g_metrics.circuit_breaker_failure_count.metadata.name = "emme_circuit_breaker_failure_count";
+    g_metrics.circuit_breaker_failure_count.metadata.help = "Current failure count";
+    g_metrics.circuit_breaker_failure_count.metadata.type = "gauge";
+    
+    g_metrics.circuit_breaker_total_opens.metadata.name = "emme_circuit_breaker_total_opens";
+    g_metrics.circuit_breaker_total_opens.metadata.help = "Total times circuit breaker opened";
+    g_metrics.circuit_breaker_total_opens.metadata.type = "gauge";
+    
+    g_metrics.circuit_breaker_total_closes.metadata.name = "emme_circuit_breaker_total_closes";
+    g_metrics.circuit_breaker_total_closes.metadata.help = "Total times circuit breaker closed";
+    g_metrics.circuit_breaker_total_closes.metadata.type = "gauge";
+    
     log_message(LOG_LEVEL_INFO, "Metrics registry initialized");
 }
 
@@ -150,6 +194,34 @@ void metrics_set_io_uring_depth(int sqe_depth, int cqe_depth)
 void metrics_set_shutdown_drain(int active)
 {
     atomic_store(&g_metrics.shutdown_drain_active.value, active ? 1 : 0);
+}
+
+void metrics_set_backend_pool_stats(const char *backend, int active, int idle, int healthy)
+{
+    (void)backend;
+    atomic_store(&g_metrics.backend_pool_active.value, active);
+    atomic_store(&g_metrics.backend_pool_idle.value, idle);
+    atomic_store(&g_metrics.backend_pool_healthy.value, healthy);
+}
+
+void metrics_set_health_checker_stats(const char *backend, int total_checks, int failed_checks,
+                                       int health_status, long last_check_time)
+{
+    (void)backend;
+    atomic_store(&g_metrics.health_checker_total_checks.value, total_checks);
+    atomic_store(&g_metrics.health_checker_failed_checks.value, failed_checks);
+    atomic_store(&g_metrics.health_checker_health_status.value, health_status);
+    atomic_store(&g_metrics.health_checker_last_check_time.value, last_check_time);
+}
+
+void metrics_set_circuit_breaker_stats(const char *backend, int state, int failure_count,
+                                        long total_opens, long total_closes)
+{
+    (void)backend;
+    atomic_store(&g_metrics.circuit_breaker_state.value, state);
+    atomic_store(&g_metrics.circuit_breaker_failure_count.value, failure_count);
+    atomic_store(&g_metrics.circuit_breaker_total_opens.value, total_opens);
+    atomic_store(&g_metrics.circuit_breaker_total_closes.value, total_closes);
 }
 
 static int format_counter(char *buffer, size_t remaining, const MetricCounter *counter)
@@ -295,6 +367,62 @@ char *metrics_format_prometheus(void)
     written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
                           &g_metrics.io_uring_cqe_depth);
     if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.backend_pool_active);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.backend_pool_idle);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.backend_pool_healthy);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.health_checker_total_checks);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.health_checker_failed_checks);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.health_checker_health_status);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.health_checker_last_check_time);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.circuit_breaker_state);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.circuit_breaker_failure_count);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.circuit_breaker_total_opens);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.circuit_breaker_total_closes);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
     
     return buffer;
 

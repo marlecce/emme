@@ -18,9 +18,13 @@
 #include "router.h"
 #include "log.h"
 #include "config.h"
+#include "backend_pool.h"
 #include "tls.h"
 #include "http2_response.h"
+#include "http2_client.h"
+#include "backend_pool.h"
 #include "metrics.h"
+#include "http_status.h"
 
 static int ssl_write_all(SSL *ssl, const char *buf, size_t len);
 
@@ -44,7 +48,7 @@ static int send_health_response(SSL *ssl, Http2Response *h2resp)
         
         if (h2resp) {
             h2_response_init(h2resp);
-            h2_response_set_status(h2resp, 503, "Service Unavailable");
+            h2_response_set_status(h2resp, HTTP_STATUS_SERVICE_UNAVAILABLE, "Service Unavailable");
             h2_response_set_content_type(h2resp, "application/json");
             h2_response_set_body(h2resp, draining_body, draining_len);
             h2_response_finalize(h2resp);
@@ -64,7 +68,7 @@ static int send_health_response(SSL *ssl, Http2Response *h2resp)
     
     if (h2resp) {
         h2_response_init(h2resp);
-        h2_response_set_status(h2resp, 200, "OK");
+        h2_response_set_status(h2resp, HTTP_STATUS_OK, "OK");
         h2_response_set_content_type(h2resp, "application/json");
         h2_response_set_body(h2resp, body, body_len);
         h2_response_finalize(h2resp);
@@ -259,11 +263,11 @@ static int serve_static_h2(HttpRequest *req, ServerConfig *config, Http2Response
     if ((size_t)filesize > sizeof(h2resp->body))
     {
         close(fd);
-        return populate_http2_response(h2resp, "", 413, "Payload Too Large", "text/plain");
+        return populate_http2_response(h2resp, "", HTTP_STATUS_PAYLOAD_TOO_LARGE, "Payload Too Large", "text/plain");
     }
 
     h2_response_init(h2resp);
-    h2_response_set_status(h2resp, 200, "OK");
+    h2_response_set_status(h2resp, HTTP_STATUS_OK, "OK");
     h2_response_set_content_type(h2resp, content_type);
 
     size_t total = 0;
@@ -463,6 +467,168 @@ int proxy_request_tls(HttpRequest *req, const char *raw_request, size_t req_len,
     return -1;
 }
 
+static int proxy_to_backend_pooled(HttpRequest *req, Route *route, 
+                                    Http2Response *h2resp, const char *body, size_t body_len)
+{
+    if (!backend_pool_circuit_breaker_allow_request(route->pool)) {
+        log_message(LOG_LEVEL_WARN, "Circuit breaker OPEN, rejecting request to %s",
+                   route->backend);
+        h2_response_init(h2resp);
+        h2_response_set_status(h2resp, HTTP_STATUS_SERVICE_UNAVAILABLE, "Service Unavailable");
+        h2_response_set_content_type(h2resp, "application/json");
+        h2_response_set_body(h2resp, "{\"error\":\"Service temporarily unavailable\"}", 38);
+        h2_response_finalize(h2resp);
+        return -1;
+    }
+    
+    backend_conn_t *conn = backend_pool_acquire(route->pool);
+    if (!conn) {
+        log_message(LOG_LEVEL_ERROR, "Failed to acquire connection from pool");
+        backend_pool_circuit_breaker_record_failure(route->pool);
+        return -1;
+    }
+    
+    log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: forwarding %s %s via pooled connection", 
+                req->method, req->path);
+    
+    int status = http2_client_send_request(&conn->client, req->method, req->path, 
+                                           route->backend, body, body_len);
+    if (status < 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to send HTTP/2 request");
+        backend_pool_mark_failure(conn);
+        backend_pool_circuit_breaker_record_failure(route->pool);
+        backend_pool_release(conn);
+        return -1;
+    }
+    
+    status = http2_client_recv_response(&conn->client);
+    if (status <= 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to receive HTTP/2 response");
+        backend_pool_mark_failure(conn);
+        backend_pool_circuit_breaker_record_failure(route->pool);
+        backend_pool_release(conn);
+        return -1;
+    }
+    
+    const char *resp_body = http2_client_get_response_body(&conn->client);
+    size_t resp_len = http2_client_get_response_length(&conn->client);
+    
+    h2_response_init(h2resp);
+    h2_response_set_status(h2resp, status, "OK");
+    h2_response_set_content_type(h2resp, "application/json");
+    h2_response_set_body(h2resp, resp_body, resp_len);
+    h2_response_finalize(h2resp);
+    
+    log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: received response status=%d, length=%zu", 
+                status, resp_len);
+    
+    backend_pool_mark_success(conn);
+    backend_pool_circuit_breaker_record_success(route->pool);
+    backend_pool_release(conn);
+    return 0;
+}
+
+static int proxy_to_backend_direct(HttpRequest *req, Route *route, 
+                                    Http2Response *h2resp, const char *body, size_t body_len)
+{
+    char ip[64];
+    int port;
+    if (sscanf(route->backend, "%63[^:]:%d", ip, &port) != 2) {
+        log_message(LOG_LEVEL_ERROR, "Invalid backend address: %s", route->backend);
+        return -1;
+    }
+    
+    log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: forwarding %s %s to %s:%d (no pool)", 
+                req->method, req->path, ip, port);
+    
+    backend_config_t backend_config = {
+        .host = {0},
+        .port = port,
+        .tls_enabled = route->tls_enabled,
+        .tls_verify = route->tls_verify
+    };
+    strncpy(backend_config.host, ip, sizeof(backend_config.host) - 1);
+    
+    http2_client_t client;
+    if (http2_client_init(&client, &backend_config) != 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to initialize HTTP/2 client");
+        return -1;
+    }
+    
+    if (http2_client_connect(&client, &backend_config) != 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to connect to HTTP/2 backend %s:%d", ip, port);
+        http2_client_cleanup(&client);
+        return -1;
+    }
+    
+    if (http2_client_send_request(&client, req->method, req->path, 
+                                   ip, body, body_len) < 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to send HTTP/2 request");
+        http2_client_cleanup(&client);
+        return -1;
+    }
+    
+    int status = http2_client_recv_response(&client);
+    if (status <= 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to receive HTTP/2 response");
+        http2_client_cleanup(&client);
+        return -1;
+    }
+    
+    const char *resp_body = http2_client_get_response_body(&client);
+    size_t resp_len = http2_client_get_response_length(&client);
+    
+    h2_response_init(h2resp);
+    h2_response_set_status(h2resp, status, "OK");
+    h2_response_set_content_type(h2resp, "application/json");
+    h2_response_set_body(h2resp, resp_body, resp_len);
+    h2_response_finalize(h2resp);
+    
+    log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: received response status=%d, length=%zu", 
+                status, resp_len);
+    
+    http2_client_cleanup(&client);
+    return 0;
+}
+
+static Route* find_reverse_proxy_route(HttpRequest *req, ServerConfig *config)
+{
+    for (int i = 0; i < config->route_count; i++) {
+        if (strcmp(config->routes[i].technology, "reverse_proxy") == 0) {
+            size_t prefix_len = strlen(config->routes[i].path);
+            if (strlen(req->path) >= prefix_len &&
+                strncmp(req->path, config->routes[i].path, prefix_len) == 0) {
+                return &config->routes[i];
+            }
+        }
+    }
+    return NULL;
+}
+
+/* proxy_request_http2()
+ *
+ * HTTP/2 reverse proxy - forwards request to backend using HTTP/2 client.
+ * Uses connection pool for connection reuse when available.
+ */
+static int proxy_request_http2(HttpRequest *req, ServerConfig *config, 
+                                Http2Response *h2resp, const char *body, size_t body_len)
+{
+    if (!req || !config || !h2resp) {
+        return -1;
+    }
+    
+    Route *matched_route = find_reverse_proxy_route(req, config);
+    if (!matched_route) {
+        return -1;
+    }
+    
+    if (matched_route->pool) {
+        return proxy_to_backend_pooled(req, matched_route, h2resp, body, body_len);
+    } else {
+        return proxy_to_backend_direct(req, matched_route, h2resp, body, body_len);
+    }
+}
+
 /* route_request_tls()
  *
  * Decides how to handle the request:
@@ -503,8 +669,14 @@ int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerC
             if (static_result < 0)
                 return -1;
 
-            if (has_matching_proxy_route(req, config))
+            if (has_matching_proxy_route(req, config)) {
+                // Try HTTP/2 proxy first
+                if (proxy_request_http2(req, config, h2resp, NULL, 0) == 0) {
+                    return 0;
+                }
+                // Fallback to 501 if HTTP/2 proxy fails
                 return populate_http2_response(h2resp, "", 501, "Not Implemented", "text/plain");
+            }
         }
         return populate_http2_response(h2resp, "", 404, "Not Found", "text/plain");
     }

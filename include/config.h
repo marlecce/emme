@@ -3,9 +3,34 @@
 
 #define MAX_ROUTES 16
 #define MAX_LOG_LEVEL 16
+#define BACKEND_POOL_DEFAULT_SIZE 10
+#define BACKEND_POOL_IDLE_TIMEOUT_SEC 60
 
 #include <limits.h>
+#include <stdbool.h>
 #include "logging_common.h"
+
+typedef struct {
+    bool enabled;
+    char path[128];
+    int interval_seconds;
+    int timeout_seconds;
+    int unhealthy_threshold;
+    int healthy_threshold;
+} HealthCheckConfig;
+
+typedef struct {
+    int size;
+    int idle_timeout_seconds;
+} ConnectionPoolConfig;
+
+typedef struct {
+    bool enabled;
+    int failure_threshold;
+    int recovery_timeout_seconds;
+} CircuitBreakerConfig;
+
+typedef struct backend_pool_s RouteBackendPool;
 
 typedef struct {
     char path[128];       
@@ -14,6 +39,13 @@ typedef struct {
     char document_root_real[PATH_MAX];
     int document_root_resolved;
     char backend[64];
+    bool http2_enabled;
+    bool tls_enabled;
+    bool tls_verify;
+    HealthCheckConfig health_check;
+    ConnectionPoolConfig connection_pool;
+    CircuitBreakerConfig circuit_breaker;
+    RouteBackendPool *pool;
 } Route;
 
 typedef struct {
@@ -47,5 +79,6 @@ typedef struct {
 
 int load_config(ServerConfig *config, const char *file_path);
 void apply_env_overrides(ServerConfig *config);
+int parse_backend_url(const char *backend, char *host, size_t host_size, int *port);
 
 #endif

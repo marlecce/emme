@@ -163,6 +163,22 @@ static int parse_size_in_range(const char *text, size_t min, size_t max, size_t 
     return 0;
 }
 
+static int get_yaml_int(yaml_node_t *node, const char *field, int *result)
+{
+    if (!node || node->type != YAML_SCALAR_NODE) {
+        fprintf(stderr, "Invalid '%s': expected integer scalar\n", field);
+        return -1;
+    }
+    char *endptr;
+    long val = strtol((const char *)node->data.scalar.value, &endptr, 10);
+    if (*endptr != '\0') {
+        fprintf(stderr, "Invalid '%s': expected integer, got '%s'\n", field, (const char *)node->data.scalar.value);
+        return -1;
+    }
+    *result = (int)val;
+    return 0;
+}
+
 static int get_yaml_int_in_range_ext(yaml_node_t *node, const char *field,
                                      int min, int max, int *result, int line)
 {
@@ -294,21 +310,169 @@ static int parse_appender_flags(yaml_document_t *doc, yaml_node_t *node, Logging
     return 0;
 }
 
-static int validate_backend(const char *backend)
+static int parse_health_check_config(yaml_document_t *doc, yaml_node_t *node, HealthCheckConfig *hc)
 {
-    char host[64];
-    int port;
+    if (!node || node->type != YAML_MAPPING_NODE) {
+        return 0; // Optional, missing is OK
+    }
+    
+    hc->enabled = false;
+    snprintf(hc->path, sizeof(hc->path), "/health");
+    hc->interval_seconds = 10;
+    hc->timeout_seconds = 5;
+    hc->unhealthy_threshold = 3;
+    hc->healthy_threshold = 2;
+    
+    yaml_node_t *field;
+    
+    field = find_yaml_node(doc, node, "enabled");
+    if (field) {
+        int val;
+        if (get_yaml_bool(field, "health_check.enabled", &val) == 0) {
+            hc->enabled = (bool)val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "path");
+    if (field) {
+        get_yaml_string(field, "health_check.path", hc->path, sizeof(hc->path));
+    }
+    
+    field = find_yaml_node(doc, node, "interval_seconds");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "health_check.interval_seconds", &val) == 0) {
+            hc->interval_seconds = val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "timeout_seconds");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "health_check.timeout_seconds", &val) == 0) {
+            hc->timeout_seconds = val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "unhealthy_threshold");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "health_check.unhealthy_threshold", &val) == 0) {
+            hc->unhealthy_threshold = val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "healthy_threshold");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "health_check.healthy_threshold", &val) == 0) {
+            hc->healthy_threshold = val;
+        }
+    }
+    
+    return 0;
+}
+
+static int parse_connection_pool_config(yaml_document_t *doc, yaml_node_t *node, ConnectionPoolConfig *cp)
+{
+    if (!node || node->type != YAML_MAPPING_NODE) {
+        cp->size = BACKEND_POOL_DEFAULT_SIZE;
+        cp->idle_timeout_seconds = BACKEND_POOL_IDLE_TIMEOUT_SEC;
+        return 0;
+    }
+    
+    cp->size = BACKEND_POOL_DEFAULT_SIZE;
+    cp->idle_timeout_seconds = BACKEND_POOL_IDLE_TIMEOUT_SEC;
+    
+    yaml_node_t *field;
+    
+    field = find_yaml_node(doc, node, "size");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "connection_pool.size", &val) == 0) {
+            cp->size = val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "idle_timeout_seconds");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "connection_pool.idle_timeout_seconds", &val) == 0) {
+            cp->idle_timeout_seconds = val;
+        }
+    }
+    
+    return 0;
+}
+
+static int parse_circuit_breaker_config(yaml_document_t *doc, yaml_node_t *node, CircuitBreakerConfig *cb)
+{
+    if (!node || node->type != YAML_MAPPING_NODE) {
+        cb->enabled = false;
+        cb->failure_threshold = 5;
+        cb->recovery_timeout_seconds = 30;
+        return 0;
+    }
+    
+    cb->enabled = false;
+    cb->failure_threshold = 5;
+    cb->recovery_timeout_seconds = 30;
+    
+    yaml_node_t *field;
+    
+    field = find_yaml_node(doc, node, "enabled");
+    if (field) {
+        int val;
+        if (get_yaml_bool(field, "circuit_breaker.enabled", &val) == 0) {
+            cb->enabled = (bool)val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "failure_threshold");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "circuit_breaker.failure_threshold", &val) == 0) {
+            cb->failure_threshold = val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "recovery_timeout_seconds");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "circuit_breaker.recovery_timeout_seconds", &val) == 0) {
+            cb->recovery_timeout_seconds = val;
+        }
+    }
+    
+    return 0;
+}
+
+int parse_backend_url(const char *backend, char *host, size_t host_size, int *port)
+{
+    char temp_host[256];
+    int temp_port;
     char trailing;
 
     if (!backend || backend[0] == '\0')
         return -1;
-    if (sscanf(backend, "%63[^:]:%d%c", host, &port, &trailing) != 2)
+    if (sscanf(backend, "%255[^:]:%d%c", temp_host, &temp_port, &trailing) != 2)
         return -1;
-    if (host[0] == '\0')
+    if (temp_host[0] == '\0')
         return -1;
-    if (port < 1 || port > 65535)
+    if (temp_port < 1 || temp_port > 65535)
         return -1;
+    
+    snprintf(host, host_size, "%s", temp_host);
+    *port = temp_port;
     return 0;
+}
+
+static int validate_backend(const char *backend)
+{
+    char host[64];
+    int port;
+
+    return parse_backend_url(backend, host, sizeof(host), &port);
 }
 
 static int validate_routes(const ServerConfig *config)
@@ -494,6 +658,45 @@ static int parse_route_entry(ConfigParser *ctx, yaml_node_t *route_node)
         get_yaml_string(route_field, "routes[].backend",
                         route->backend, sizeof(route->backend)) != 0)
         return -1;
+
+    // Parse HTTP/2 reverse proxy options
+    route->http2_enabled = false;
+    route->tls_enabled = true;
+    route->tls_verify = false;
+    
+    route_field = find_yaml_node(ctx->document, route_node, "http2_enabled");
+    if (route_field) {
+        int val;
+        if (get_yaml_bool(route_field, "routes[].http2_enabled", &val) == 0) {
+            route->http2_enabled = (bool)val;
+        }
+    }
+    
+    route_field = find_yaml_node(ctx->document, route_node, "tls_enabled");
+    if (route_field) {
+        int val;
+        if (get_yaml_bool(route_field, "routes[].tls_enabled", &val) == 0) {
+            route->tls_enabled = (bool)val;
+        }
+    }
+    
+    route_field = find_yaml_node(ctx->document, route_node, "tls_verify");
+    if (route_field) {
+        int val;
+        if (get_yaml_bool(route_field, "routes[].tls_verify", &val) == 0) {
+            route->tls_verify = (bool)val;
+        }
+    }
+    
+    // Parse nested config sections
+    yaml_node_t *hc_node = find_yaml_node(ctx->document, route_node, "health_check");
+    parse_health_check_config(ctx->document, hc_node, &route->health_check);
+    
+    yaml_node_t *cp_node = find_yaml_node(ctx->document, route_node, "connection_pool");
+    parse_connection_pool_config(ctx->document, cp_node, &route->connection_pool);
+    
+    yaml_node_t *cb_node = find_yaml_node(ctx->document, route_node, "circuit_breaker");
+    parse_circuit_breaker_config(ctx->document, cb_node, &route->circuit_breaker);
 
     if (route->document_root[0] != '\0') {
         if (realpath(route->document_root, route->document_root_real)) {

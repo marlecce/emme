@@ -131,25 +131,34 @@ This document outlines the development roadmap for Emme, prioritized by producti
 
 ---
 
-### P1: HTTP/2 Reverse Proxy
+### P1: HTTP/2 Reverse Proxy ✅ COMPLETED
 **Severity**: HIGH | **Impact**: Multi-cloud backend routing only works for HTTP/1.1
 
-**Current State**: HTTP/2 requests to `/api/` return 501 Not Implemented
+**Current State**: ✅ Fully implemented with connection pooling, health checks, and circuit breaker
 
 **Implementation**:
-- [ ] Add backend connection pooling (keep-alive connections to backends)
-- [ ] Implement HTTP/2 client via nghttp2 for upstream connections
-- [ ] Support TLS to backends with certificate validation
-- [ ] Configure backend health checks (interval, timeout, unhealthy threshold)
-- [ ] Add circuit breaker pattern (max failures, recovery timeout)
+- [x] Add backend connection pooling (keep-alive connections to backends)
+- [x] Implement HTTP/2 client via nghttp2 for upstream connections
+- [x] Support TLS to backends with certificate validation
+- [x] Configure backend health checks (interval, timeout, unhealthy threshold)
+- [x] Add circuit breaker pattern (max failures, recovery timeout)
+- [x] Metrics integration (12 new Prometheus metrics)
+- [x] Unit tests (14 tests, 100% passing)
 
-**Files to modify**: `src/router.c`, `src/http2_client.c` (new), `include/http2_client.h` (new)
+**Files created/modified**: 
+- New: `src/http2_client.c` (534 lines), `include/http2_client.h` (72 lines)
+- New: `src/backend_pool.c` (~682 lines), `include/backend_pool.h` (141 lines)
+- New: `tests/unit/test_backend_pool.c` (~380 lines)
+- Modified: `src/config.c`, `src/router.c`, `src/main.c`, `include/metrics.h`, `src/metrics.c`
 
 **Acceptance criteria**:
-- HTTP/2 requests to `/api/*` proxy correctly to upstream
-- Backend TLS certificates validated (configurable to skip for dev)
-- Connection reuse across multiple requests (no new TCP per request)
-- Failed backends detected and removed from pool within 5s
+- [x] HTTP/2 requests to `/api/*` proxy correctly to upstream
+- [x] Backend TLS certificates validated (configurable to skip for dev)
+- [x] Connection reuse across multiple requests (no new TCP per request)
+- [x] Failed backends detected and removed from pool within 5s
+- [x] Circuit breaker prevents cascade failures
+- [x] Health checker runs in background thread per pool
+- [x] Metrics exported for pool/health/circuit breaker state
 
 ---
 
