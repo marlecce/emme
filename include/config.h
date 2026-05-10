@@ -22,6 +22,9 @@ typedef struct {
     char session_ticket_key[256];
     int session_cache_size;
     int session_timeout;
+    int read_buffer_size;
+    int enable_partial_write;
+    int release_buffers;
 } SSLConfig;
 
 typedef struct {

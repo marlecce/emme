@@ -4,7 +4,7 @@
 #include "config.h"
 #include <liburing.h>
 
-#define BUFFER_SIZE 8192
+#define BUFFER_SIZE 32768
 #define QUEUE_DEPTH 64
 
 void handle_client(int client_fd, ServerConfig *config, struct io_uring *ring);

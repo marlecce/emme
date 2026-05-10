@@ -20,6 +20,9 @@ ssl:
   session_cache_size: 100000
   session_timeout: 300
   session_ticket_key: "/etc/emme/ticket.key"
+  read_buffer_size: 32768
+  enable_partial_write: 1
+  release_buffers: 1
 
 http2:
   keepalive_timeout: 60

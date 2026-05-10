@@ -24,6 +24,59 @@ static yaml_node_t *find_yaml_node(yaml_document_t *doc, yaml_node_t *node, cons
     return NULL;
 }
 
+static int get_node_line(yaml_node_t *node)
+{
+    if (!node)
+        return 0;
+    return (int)node->start_mark.line + 1;
+}
+
+typedef struct {
+    yaml_document_t *document;
+    yaml_node_t *root;
+    ServerConfig *config;
+    const char *section_name;
+} ConfigParser;
+
+#define PARSE_FIELD(field_name, parser_func, min_val, max_val, dest) \
+    do { \
+        yaml_node_t *_node = find_yaml_node(ctx->document, node, field_name); \
+        if (_node) { \
+            char _full_name[128]; \
+            snprintf(_full_name, sizeof(_full_name), "%s.%s", ctx->section_name, field_name); \
+            if (parser_func(_node, _full_name, min_val, max_val, dest) != 0) { \
+                fprintf(stderr, "  at line %d\n", get_node_line(_node)); \
+                return -1; \
+            } \
+        } \
+    } while(0)
+
+#define PARSE_STRING(field_name, dest, size) \
+    do { \
+        yaml_node_t *_node = find_yaml_node(ctx->document, node, field_name); \
+        if (_node) { \
+            char _full_name[128]; \
+            snprintf(_full_name, sizeof(_full_name), "%s.%s", ctx->section_name, field_name); \
+            if (get_yaml_string(_node, _full_name, dest, size) != 0) { \
+                fprintf(stderr, "  at line %d\n", get_node_line(_node)); \
+                return -1; \
+            } \
+        } \
+    } while(0)
+
+#define PARSE_BOOL(field_name, dest) \
+    do { \
+        yaml_node_t *_node = find_yaml_node(ctx->document, node, field_name); \
+        if (_node) { \
+            char _full_name[128]; \
+            snprintf(_full_name, sizeof(_full_name), "%s.%s", ctx->section_name, field_name); \
+            if (get_yaml_bool(_node, _full_name, dest) != 0) { \
+                fprintf(stderr, "  at line %d\n", get_node_line(_node)); \
+                return -1; \
+            } \
+        } \
+    } while(0)
+
 static void set_config_defaults(ServerConfig *config)
 {
     memset(config, 0, sizeof(*config));
@@ -44,29 +97,37 @@ static void set_config_defaults(ServerConfig *config)
     config->ssl.session_cache_size = 100000;
     config->ssl.session_timeout = 300;
     config->ssl.session_ticket_key[0] = '\0';
+    config->ssl.read_buffer_size = 32768;
+    config->ssl.enable_partial_write = 1;
+    config->ssl.release_buffers = 1;
 
     config->http2.keepalive_timeout = 60;
     config->http2.max_requests_per_connection = 1000;
     config->http2.max_concurrent_streams = 100;
 }
 
-static int get_yaml_string(yaml_node_t *node, const char *field, char *buffer, size_t size)
+static int get_yaml_string_ext(yaml_node_t *node, const char *field, char *buffer, size_t size, int line)
 {
     int written;
     const char *value;
 
     if (!node || node->type != YAML_SCALAR_NODE) {
-        fprintf(stderr, "Invalid '%s': expected a scalar string\n", field);
+        fprintf(stderr, "Invalid '%s' (line %d): expected a scalar string\n", field, line);
         return -1;
     }
 
     value = (const char *)node->data.scalar.value;
     written = snprintf(buffer, size, "%s", value);
     if (written < 0 || (size_t)written >= size) {
-        fprintf(stderr, "Invalid '%s': value too long\n", field);
+        fprintf(stderr, "Invalid '%s' (line %d): value too long\n", field, line);
         return -1;
     }
     return 0;
+}
+
+static int get_yaml_string(yaml_node_t *node, const char *field, char *buffer, size_t size)
+{
+    return get_yaml_string_ext(node, field, buffer, size, get_node_line(node));
 }
 
 static int parse_int_in_range(const char *text, int min, int max, int *result)
@@ -101,16 +162,37 @@ static int parse_size_in_range(const char *text, size_t min, size_t max, size_t 
     return 0;
 }
 
-static int get_yaml_int_in_range(yaml_node_t *node, const char *field,
-                                 int min, int max, int *result)
+static int get_yaml_int_in_range_ext(yaml_node_t *node, const char *field,
+                                     int min, int max, int *result, int line)
 {
     if (!node || node->type != YAML_SCALAR_NODE) {
-        fprintf(stderr, "Invalid '%s': expected integer scalar\n", field);
+        fprintf(stderr, "Invalid '%s' (line %d): expected integer scalar\n", field, line);
         return -1;
     }
     if (parse_int_in_range((const char *)node->data.scalar.value, min, max, result) != 0) {
-        fprintf(stderr, "Invalid '%s': expected integer in range [%d, %d]\n",
-                field, min, max);
+        fprintf(stderr, "Invalid '%s' (line %d): expected integer in range [%d, %d]\n",
+                field, line, min, max);
+        return -1;
+    }
+    return 0;
+}
+
+static int get_yaml_int_in_range(yaml_node_t *node, const char *field,
+                                 int min, int max, int *result)
+{
+    return get_yaml_int_in_range_ext(node, field, min, max, result, get_node_line(node));
+}
+
+static int get_yaml_size_in_range_ext(yaml_node_t *node, const char *field,
+                                      size_t min, size_t max, size_t *result, int line)
+{
+    if (!node || node->type != YAML_SCALAR_NODE) {
+        fprintf(stderr, "Invalid '%s' (line %d): expected integer scalar\n", field, line);
+        return -1;
+    }
+    if (parse_size_in_range((const char *)node->data.scalar.value, min, max, result) != 0) {
+        fprintf(stderr, "Invalid '%s' (line %d): expected integer in range [%zu, %zu]\n",
+                field, line, min, max);
         return -1;
     }
     return 0;
@@ -119,24 +201,15 @@ static int get_yaml_int_in_range(yaml_node_t *node, const char *field,
 static int get_yaml_size_in_range(yaml_node_t *node, const char *field,
                                   size_t min, size_t max, size_t *result)
 {
-    if (!node || node->type != YAML_SCALAR_NODE) {
-        fprintf(stderr, "Invalid '%s': expected integer scalar\n", field);
-        return -1;
-    }
-    if (parse_size_in_range((const char *)node->data.scalar.value, min, max, result) != 0) {
-        fprintf(stderr, "Invalid '%s': expected integer in range [%zu, %zu]\n",
-                field, min, max);
-        return -1;
-    }
-    return 0;
+    return get_yaml_size_in_range_ext(node, field, min, max, result, get_node_line(node));
 }
 
-static int get_yaml_bool(yaml_node_t *node, const char *field, int *result)
+static int get_yaml_bool_ext(yaml_node_t *node, const char *field, int *result, int line)
 {
     const char *value;
 
     if (!node || node->type != YAML_SCALAR_NODE) {
-        fprintf(stderr, "Invalid '%s': expected boolean scalar\n", field);
+        fprintf(stderr, "Invalid '%s' (line %d): expected boolean scalar\n", field, line);
         return -1;
     }
 
@@ -150,8 +223,13 @@ static int get_yaml_bool(yaml_node_t *node, const char *field, int *result)
         return 0;
     }
 
-    fprintf(stderr, "Invalid '%s': expected true/false\n", field);
+    fprintf(stderr, "Invalid '%s' (line %d): expected true/false\n", field, line);
     return -1;
+}
+
+static int get_yaml_bool(yaml_node_t *node, const char *field, int *result)
+{
+    return get_yaml_bool_ext(node, field, result, get_node_line(node));
 }
 
 static int parse_log_level(const char *value, LogLevel *level)
@@ -265,13 +343,225 @@ static int validate_routes(const ServerConfig *config)
     return 0;
 }
 
+static int parse_server_section(ConfigParser *ctx, yaml_node_t *node)
+{
+    ctx->section_name = "server";
+
+    if (node->type != YAML_MAPPING_NODE) {
+        fprintf(stderr, "Invalid 'server' (line %d): expected mapping\n",
+                get_node_line(node));
+        return -1;
+    }
+
+    PARSE_FIELD("port", get_yaml_int_in_range, 1, 65535, &ctx->config->port);
+    PARSE_FIELD("max_connections", get_yaml_int_in_range, 1, 1000000, &ctx->config->max_connections);
+    PARSE_STRING("log_level", ctx->config->log_level, sizeof(ctx->config->log_level));
+
+    return 0;
+}
+
+static int parse_logging_section(ConfigParser *ctx, yaml_node_t *node)
+{
+    ctx->section_name = "logging";
+
+    if (node->type != YAML_MAPPING_NODE) {
+        fprintf(stderr, "Invalid 'logging' (line %d): expected mapping\n",
+                get_node_line(node));
+        return -1;
+    }
+
+    PARSE_STRING("file", ctx->config->logging.file, sizeof(ctx->config->logging.file));
+    PARSE_FIELD("buffer_size", get_yaml_size_in_range, 1, 1048576, &ctx->config->logging.buffer_size);
+
+    yaml_node_t *level_node = find_yaml_node(ctx->document, node, "level");
+    if (level_node) {
+        char level_str[16];
+        int line = get_node_line(level_node);
+        if (get_yaml_string(level_node, "logging.level", level_str, sizeof(level_str)) != 0) {
+            fprintf(stderr, "  at line %d\n", line);
+            return -1;
+        }
+        if (parse_log_level(level_str, &ctx->config->logging.level) != 0) {
+            fprintf(stderr, "Invalid 'logging.level' (line %d): expected debug/info/warn/error\n", line);
+            return -1;
+        }
+    }
+
+    yaml_node_t *format_node = find_yaml_node(ctx->document, node, "format");
+    if (format_node) {
+        char format_str[16];
+        int line = get_node_line(format_node);
+        if (get_yaml_string(format_node, "logging.format", format_str, sizeof(format_str)) != 0) {
+            fprintf(stderr, "  at line %d\n", line);
+            return -1;
+        }
+        if (parse_log_format(format_str, &ctx->config->logging.format) != 0) {
+            fprintf(stderr, "Invalid 'logging.format' (line %d): expected plain/json\n", line);
+            return -1;
+        }
+    }
+
+    PARSE_FIELD("buffer_size", get_yaml_size_in_range, 1, 1048576, &ctx->config->logging.buffer_size);
+    PARSE_FIELD("rollover_size", get_yaml_size_in_range, 0, 1099511627776ULL, &ctx->config->logging.rollover_size);
+    PARSE_BOOL("rollover_daily", &ctx->config->logging.rollover_daily);
+
+    yaml_node_t *appender_flags_node = find_yaml_node(ctx->document, node, "appender_flags");
+    if (appender_flags_node) {
+        if (parse_appender_flags(ctx->document, appender_flags_node, &ctx->config->logging) != 0) {
+            fprintf(stderr, "  at line %d\n", get_node_line(appender_flags_node));
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_ssl_section(ConfigParser *ctx, yaml_node_t *node)
+{
+    ctx->section_name = "ssl";
+
+    if (node->type != YAML_MAPPING_NODE) {
+        fprintf(stderr, "Invalid 'ssl' (line %d): expected mapping\n",
+                get_node_line(node));
+        return -1;
+    }
+
+    PARSE_STRING("certificate", ctx->config->ssl.certificate, sizeof(ctx->config->ssl.certificate));
+    PARSE_STRING("private_key", ctx->config->ssl.private_key, sizeof(ctx->config->ssl.private_key));
+    PARSE_FIELD("session_cache_size", get_yaml_int_in_range, 1000, 1000000, &ctx->config->ssl.session_cache_size);
+    PARSE_FIELD("session_timeout", get_yaml_int_in_range, 60, 3600, &ctx->config->ssl.session_timeout);
+    PARSE_STRING("session_ticket_key", ctx->config->ssl.session_ticket_key, sizeof(ctx->config->ssl.session_ticket_key));
+    PARSE_FIELD("read_buffer_size", get_yaml_int_in_range, 4096, 65536, &ctx->config->ssl.read_buffer_size);
+    PARSE_BOOL("enable_partial_write", &ctx->config->ssl.enable_partial_write);
+    PARSE_BOOL("release_buffers", &ctx->config->ssl.release_buffers);
+
+    return 0;
+}
+
+static int parse_http2_section(ConfigParser *ctx, yaml_node_t *node)
+{
+    ctx->section_name = "http2";
+
+    if (node->type != YAML_MAPPING_NODE) {
+        fprintf(stderr, "Invalid 'http2' (line %d): expected mapping\n",
+                get_node_line(node));
+        return -1;
+    }
+
+    PARSE_FIELD("keepalive_timeout", get_yaml_int_in_range, 10, 300, &ctx->config->http2.keepalive_timeout);
+    PARSE_FIELD("max_requests_per_connection", get_yaml_int_in_range, 1, 100000, &ctx->config->http2.max_requests_per_connection);
+    PARSE_FIELD("max_concurrent_streams", get_yaml_int_in_range, 1, 1000, &ctx->config->http2.max_concurrent_streams);
+
+    return 0;
+}
+
+static int parse_route_entry(ConfigParser *ctx, yaml_node_t *route_node)
+{
+    if (ctx->config->route_count >= MAX_ROUTES) {
+        fprintf(stderr, "Too many routes: maximum supported is %d\n", MAX_ROUTES);
+        return -1;
+    }
+
+    Route *route = &ctx->config->routes[ctx->config->route_count];
+    memset(route, 0, sizeof(*route));
+
+    yaml_node_t *route_field = find_yaml_node(ctx->document, route_node, "path");
+    if (!route_field ||
+        get_yaml_string(route_field, "routes[].path",
+                        route->path, sizeof(route->path)) != 0) {
+        fprintf(stderr, "Invalid route: missing or invalid 'path'\n");
+        return -1;
+    }
+
+    route_field = find_yaml_node(ctx->document, route_node, "technology");
+    if (!route_field ||
+        get_yaml_string(route_field, "routes[].technology",
+                        route->technology, sizeof(route->technology)) != 0) {
+        fprintf(stderr, "Invalid route: missing or invalid 'technology'\n");
+        return -1;
+    }
+
+    route_field = find_yaml_node(ctx->document, route_node, "document_root");
+    if (route_field &&
+        get_yaml_string(route_field, "routes[].document_root",
+                        route->document_root, sizeof(route->document_root)) != 0)
+        return -1;
+
+    route_field = find_yaml_node(ctx->document, route_node, "backend");
+    if (route_field &&
+        get_yaml_string(route_field, "routes[].backend",
+                        route->backend, sizeof(route->backend)) != 0)
+        return -1;
+
+    if (route->document_root[0] != '\0') {
+        if (realpath(route->document_root, route->document_root_real)) {
+            route->document_root_resolved = 1;
+        } else {
+            route->document_root_resolved = 0;
+            strncpy(route->document_root_real, route->document_root,
+                    sizeof(route->document_root_real) - 1);
+            route->document_root_real[sizeof(route->document_root_real) - 1] = '\0';
+        }
+    }
+
+    ctx->config->route_count++;
+    return 0;
+}
+
+static int parse_routes_section(ConfigParser *ctx, yaml_node_t *node)
+{
+    if (node->type != YAML_SEQUENCE_NODE) {
+        fprintf(stderr, "Invalid 'routes' (line %d): expected sequence\n",
+                get_node_line(node));
+        return -1;
+    }
+
+    for (yaml_node_item_t *item = node->data.sequence.items.start;
+         item < node->data.sequence.items.top; item++) {
+        yaml_node_t *route_node = yaml_document_get_node(ctx->document, *item);
+        if (!route_node || route_node->type != YAML_MAPPING_NODE) {
+            fprintf(stderr, "Invalid route entry (line %d): expected mapping\n",
+                    get_node_line(route_node));
+            return -1;
+        }
+
+        if (parse_route_entry(ctx, route_node) != 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+static int validate_config(const ServerConfig *config)
+{
+    if (config->ssl.certificate[0] == '\0' || config->ssl.private_key[0] == '\0') {
+        fprintf(stderr, "Invalid SSL config: certificate and private_key are required\n");
+        return -1;
+    }
+
+    if (config->logging.appender_flags == 0) {
+        fprintf(stderr, "Invalid logging config: at least one appender must be enabled\n");
+        return -1;
+    }
+
+    if ((config->logging.appender_flags & APPENDER_FILE) && config->logging.file[0] == '\0') {
+        fprintf(stderr, "Invalid logging config: file appender requires 'logging.file'\n");
+        return -1;
+    }
+
+    if (validate_routes(config) != 0)
+        return -1;
+
+    return 0;
+}
+
 int load_config(ServerConfig *config, const char *file_path)
 {
     FILE *fh = NULL;
     yaml_parser_t parser;
     yaml_document_t document;
     yaml_node_t *root;
-    yaml_node_t *node;
+    ConfigParser ctx;
     int parser_ready = 0;
     int document_ready = 0;
     int rc = -1;
@@ -308,235 +598,31 @@ int load_config(ServerConfig *config, const char *file_path)
         goto cleanup;
     }
 
-    node = find_yaml_node(&document, root, "server");
-    if (node) {
-        if (node->type != YAML_MAPPING_NODE) {
-            fprintf(stderr, "Invalid 'server': expected mapping\n");
-            goto cleanup;
-        }
+    ctx.document = &document;
+    ctx.root = root;
+    ctx.config = config;
 
-        yaml_node_t *port_node = find_yaml_node(&document, node, "port");
-        if (port_node && get_yaml_int_in_range(port_node, "server.port", 1, 65535, &config->port) != 0)
-            goto cleanup;
-
-        yaml_node_t *max_conn_node = find_yaml_node(&document, node, "max_connections");
-        if (max_conn_node &&
-            get_yaml_int_in_range(max_conn_node, "server.max_connections", 1, 1000000,
-                                  &config->max_connections) != 0)
-            goto cleanup;
-
-        yaml_node_t *log_level_node = find_yaml_node(&document, node, "log_level");
-        if (log_level_node &&
-            get_yaml_string(log_level_node, "server.log_level",
-                            config->log_level, sizeof(config->log_level)) != 0)
-            goto cleanup;
-    }
+    yaml_node_t *node = find_yaml_node(&document, root, "server");
+    if (node && parse_server_section(&ctx, node) != 0)
+        goto cleanup;
 
     node = find_yaml_node(&document, root, "logging");
-    if (node) {
-        if (node->type != YAML_MAPPING_NODE) {
-            fprintf(stderr, "Invalid 'logging': expected mapping\n");
-            goto cleanup;
-        }
-
-        yaml_node_t *file_node = find_yaml_node(&document, node, "file");
-        if (file_node &&
-            get_yaml_string(file_node, "logging.file",
-                            config->logging.file, sizeof(config->logging.file)) != 0)
-            goto cleanup;
-
-        yaml_node_t *level_node = find_yaml_node(&document, node, "level");
-        if (level_node) {
-            char level_str[16];
-            if (get_yaml_string(level_node, "logging.level", level_str, sizeof(level_str)) != 0)
-                goto cleanup;
-            if (parse_log_level(level_str, &config->logging.level) != 0) {
-                fprintf(stderr, "Invalid 'logging.level': expected debug/info/warn/error\n");
-                goto cleanup;
-            }
-        }
-
-        yaml_node_t *format_node = find_yaml_node(&document, node, "format");
-        if (format_node) {
-            char format_str[16];
-            if (get_yaml_string(format_node, "logging.format", format_str, sizeof(format_str)) != 0)
-                goto cleanup;
-            if (parse_log_format(format_str, &config->logging.format) != 0) {
-                fprintf(stderr, "Invalid 'logging.format': expected plain/json\n");
-                goto cleanup;
-            }
-        }
-
-        yaml_node_t *buffer_size_node = find_yaml_node(&document, node, "buffer_size");
-        if (buffer_size_node &&
-            get_yaml_size_in_range(buffer_size_node, "logging.buffer_size", 1, 1048576,
-                                   &config->logging.buffer_size) != 0)
-            goto cleanup;
-
-        yaml_node_t *rollover_size_node = find_yaml_node(&document, node, "rollover_size");
-        if (rollover_size_node &&
-            get_yaml_size_in_range(rollover_size_node, "logging.rollover_size", 0, 1099511627776ULL,
-                                   &config->logging.rollover_size) != 0)
-            goto cleanup;
-
-        yaml_node_t *rollover_daily_node = find_yaml_node(&document, node, "rollover_daily");
-        if (rollover_daily_node &&
-            get_yaml_bool(rollover_daily_node, "logging.rollover_daily",
-                          &config->logging.rollover_daily) != 0)
-            goto cleanup;
-
-        yaml_node_t *appender_flags_node = find_yaml_node(&document, node, "appender_flags");
-        if (parse_appender_flags(&document, appender_flags_node, &config->logging) != 0)
-            goto cleanup;
-    }
+    if (node && parse_logging_section(&ctx, node) != 0)
+        goto cleanup;
 
     node = find_yaml_node(&document, root, "ssl");
-    if (node) {
-        if (node->type != YAML_MAPPING_NODE) {
-            fprintf(stderr, "Invalid 'ssl': expected mapping\n");
-            goto cleanup;
-        }
-
-        yaml_node_t *cert_node = find_yaml_node(&document, node, "certificate");
-        if (cert_node &&
-            get_yaml_string(cert_node, "ssl.certificate",
-                            config->ssl.certificate, sizeof(config->ssl.certificate)) != 0)
-            goto cleanup;
-
-        yaml_node_t *key_node = find_yaml_node(&document, node, "private_key");
-        if (key_node &&
-            get_yaml_string(key_node, "ssl.private_key",
-                            config->ssl.private_key, sizeof(config->ssl.private_key)) != 0)
-            goto cleanup;
-
-        yaml_node_t *cache_size_node = find_yaml_node(&document, node, "session_cache_size");
-        if (cache_size_node &&
-            get_yaml_int_in_range(cache_size_node, "ssl.session_cache_size", 1000, 1000000,
-                                  &config->ssl.session_cache_size) != 0)
-            goto cleanup;
-
-        yaml_node_t *timeout_node = find_yaml_node(&document, node, "session_timeout");
-        if (timeout_node &&
-            get_yaml_int_in_range(timeout_node, "ssl.session_timeout", 60, 3600,
-                                  &config->ssl.session_timeout) != 0)
-            goto cleanup;
-
-        yaml_node_t *ticket_key_node = find_yaml_node(&document, node, "session_ticket_key");
-        if (ticket_key_node &&
-            get_yaml_string(ticket_key_node, "ssl.session_ticket_key",
-                            config->ssl.session_ticket_key, sizeof(config->ssl.session_ticket_key)) != 0)
-            goto cleanup;
-    }
+    if (node && parse_ssl_section(&ctx, node) != 0)
+        goto cleanup;
 
     node = find_yaml_node(&document, root, "http2");
-    if (node) {
-        if (node->type != YAML_MAPPING_NODE) {
-            fprintf(stderr, "Invalid 'http2': expected mapping\n");
-            goto cleanup;
-        }
-
-        yaml_node_t *keepalive_node = find_yaml_node(&document, node, "keepalive_timeout");
-        if (keepalive_node &&
-            get_yaml_int_in_range(keepalive_node, "http2.keepalive_timeout", 10, 300,
-                                  &config->http2.keepalive_timeout) != 0)
-            goto cleanup;
-
-        yaml_node_t *max_requests_node = find_yaml_node(&document, node, "max_requests_per_connection");
-        if (max_requests_node &&
-            get_yaml_int_in_range(max_requests_node, "http2.max_requests_per_connection", 1, 100000,
-                                  &config->http2.max_requests_per_connection) != 0)
-            goto cleanup;
-
-        yaml_node_t *max_streams_node = find_yaml_node(&document, node, "max_concurrent_streams");
-        if (max_streams_node &&
-            get_yaml_int_in_range(max_streams_node, "http2.max_concurrent_streams", 1, 1000,
-                                  &config->http2.max_concurrent_streams) != 0)
-            goto cleanup;
-    }
+    if (node && parse_http2_section(&ctx, node) != 0)
+        goto cleanup;
 
     node = find_yaml_node(&document, root, "routes");
-    if (node) {
-        if (node->type != YAML_SEQUENCE_NODE) {
-            fprintf(stderr, "Invalid 'routes': expected sequence\n");
-            goto cleanup;
-        }
-
-        for (yaml_node_item_t *item = node->data.sequence.items.start;
-             item < node->data.sequence.items.top; item++) {
-            yaml_node_t *route_node = yaml_document_get_node(&document, *item);
-            Route *route;
-            yaml_node_t *route_field;
-
-            if (config->route_count >= MAX_ROUTES) {
-                fprintf(stderr, "Too many routes: maximum supported is %d\n", MAX_ROUTES);
-                goto cleanup;
-            }
-            if (!route_node || route_node->type != YAML_MAPPING_NODE) {
-                fprintf(stderr, "Invalid route entry: expected mapping\n");
-                goto cleanup;
-            }
-
-            route = &config->routes[config->route_count];
-            memset(route, 0, sizeof(*route));
-
-            route_field = find_yaml_node(&document, route_node, "path");
-            if (!route_field ||
-                get_yaml_string(route_field, "routes[].path",
-                                route->path, sizeof(route->path)) != 0) {
-                fprintf(stderr, "Invalid route: missing or invalid 'path'\n");
-                goto cleanup;
-            }
-
-            route_field = find_yaml_node(&document, route_node, "technology");
-            if (!route_field ||
-                get_yaml_string(route_field, "routes[].technology",
-                                route->technology, sizeof(route->technology)) != 0) {
-                fprintf(stderr, "Invalid route: missing or invalid 'technology'\n");
-                goto cleanup;
-            }
-
-            route_field = find_yaml_node(&document, route_node, "document_root");
-            if (route_field &&
-                get_yaml_string(route_field, "routes[].document_root",
-                                route->document_root, sizeof(route->document_root)) != 0)
-                goto cleanup;
-
-            route_field = find_yaml_node(&document, route_node, "backend");
-            if (route_field &&
-                get_yaml_string(route_field, "routes[].backend",
-                                route->backend, sizeof(route->backend)) != 0)
-                goto cleanup;
-
-            if (route->document_root[0] != '\0') {
-                if (realpath(route->document_root, route->document_root_real)) {
-                    route->document_root_resolved = 1;
-                } else {
-                    route->document_root_resolved = 0;
-                    strncpy(route->document_root_real, route->document_root,
-                            sizeof(route->document_root_real) - 1);
-                    route->document_root_real[sizeof(route->document_root_real) - 1] = '\0';
-                }
-            } else {
-                route->document_root_resolved = 0;
-            }
-
-            config->route_count++;
-        }
-    }
-
-    if (config->ssl.certificate[0] == '\0' || config->ssl.private_key[0] == '\0') {
-        fprintf(stderr, "Invalid SSL config: certificate and private_key are required\n");
+    if (node && parse_routes_section(&ctx, node) != 0)
         goto cleanup;
-    }
-    if (config->logging.appender_flags == 0) {
-        fprintf(stderr, "Invalid logging config: at least one appender must be enabled\n");
-        goto cleanup;
-    }
-    if ((config->logging.appender_flags & APPENDER_FILE) && config->logging.file[0] == '\0') {
-        fprintf(stderr, "Invalid logging config: file appender requires 'logging.file'\n");
-        goto cleanup;
-    }
-    if (validate_routes(config) != 0)
+
+    if (validate_config(config) != 0)
         goto cleanup;
 
     rc = 0;

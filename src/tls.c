@@ -85,6 +85,24 @@ SSL_CTX *create_ssl_context(const char *cert_path, const char *key_path, ServerC
         return NULL;
     }
 
+    /* Configure SSL modes for high-throughput async I/O */
+    int ssl_mode = 0;
+    if (config->ssl.enable_partial_write) {
+        ssl_mode |= SSL_MODE_ENABLE_PARTIAL_WRITE;
+        log_message(LOG_LEVEL_DEBUG, "SSL mode: ENABLE_PARTIAL_WRITE enabled");
+    }
+    if (config->ssl.release_buffers) {
+        ssl_mode |= SSL_MODE_RELEASE_BUFFERS;
+        log_message(LOG_LEVEL_DEBUG, "SSL mode: RELEASE_BUFFERS enabled (~34KB saved per idle connection)");
+    }
+    if (ssl_mode) {
+        SSL_CTX_set_mode(ctx, ssl_mode);
+    }
+
+    /* Set SSL read buffer size for optimal throughput */
+    SSL_CTX_set_default_read_buffer_len(ctx, (size_t)config->ssl.read_buffer_size);
+    log_message(LOG_LEVEL_INFO, "SSL read buffer size: %d bytes", config->ssl.read_buffer_size);
+
     /* Load session ticket key for stateless resumption */
     if (config->ssl.session_ticket_key[0] != '\0')
     {
