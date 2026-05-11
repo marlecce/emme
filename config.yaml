@@ -1,6 +1,8 @@
 server:
   port: 8443
   max_connections: 100
+  request_timeout_ms: 30000        # Default 30s request timeout (override via EMME_REQUEST_TIMEOUT env var)
+  tls_handshake_timeout_ms: 10000  # Default 10s TLS handshake timeout (override via EMME_TLS_HANDSHAKE_TIMEOUT env var)
   log_level: info
 
 logging:

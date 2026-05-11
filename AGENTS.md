@@ -185,6 +185,39 @@ Skill location: `skills/c-code-quality/skill.md`
 - Refactoring changes
 - Before any commit to critical modules (`server`, `tls`, `router`, `http_parser`, `thread_pool`, `config`)
 
+## Automated Documentation
+
+### Auto-Docs Skill
+After **any user-facing change or feature completion**, automatically apply the auto-docs skill workflow:
+
+1. **Impact analysis**: Identify modified files, features, and configuration changes
+2. **Update ROADMAP.md**: Mark completed features, add implementation date, list files modified
+3. **Update CHANGELOG.md**: Document added/changed/fixed/security items
+4. **Update feature docs**: Create/update `docs/FEATURE.md` with configuration, behavior, monitoring
+5. **Update README.md**: Refresh features list, configuration examples, metrics
+6. **Verify**: All links valid, no stale references, examples are current
+
+Skill location: `skills/auto-docs/skill.md`
+
+**Trigger automatically after**:
+- P0/P1 feature implementation (MANDATORY)
+- Configuration schema changes (MANDATORY)
+- API endpoint additions/modifications (MANDATORY)
+- Security hardening changes (MANDATORY)
+- P2 feature completion (RECOMMENDED)
+- Major refactoring with behavioral impact (RECOMMENDED)
+
+### Documentation Priority Matrix
+
+| Change Type | ROADMAP | CHANGELOG | Feature Doc | README |
+|-------------|---------|-----------|-------------|--------|
+| P0 Feature | ✅ | ✅ | ✅ | ✅ |
+| P1 Feature | ✅ | ✅ | ✅ | ✅ |
+| P2 Feature | ✅ | ✅ | Optional | Optional |
+| Config Change | ✅ | ✅ | ✅ | ✅ |
+| Bug Fix | Optional | ✅ | Optional | - |
+| Refactoring | - | - | - | - |
+
 ## Commit & PR Requirements
 
 ### Commit Messages

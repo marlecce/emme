@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Request Timeout Enforcement**
+  - Configurable request timeout (default 30s) via YAML and `EMME_REQUEST_TIMEOUT` env var
+  - Configurable TLS handshake timeout (default 10s) via YAML and `EMME_TLS_HANDSHAKE_TIMEOUT` env var
+  - HTTP/1.1 timeout enforcement with 408 Request Timeout response
+  - HTTP/2 timeout enforcement in event loop
+  - TLS handshake timeout with elapsed time validation
+  - UUID v4 request correlation IDs (RFC 4122) for distributed tracing
+  - Request timeout metrics: `emme_request_timeouts_total` counter
+  - 7 unit tests for timeout logic and UUID format validation
+
+- **Auto-Docs Skill**
+  - Created reusable skill at `skills/auto-docs/` for automatic documentation updates
+  - Workflow: 7-phase process (Impact Analysis → ROADMAP → CHANGELOG → Feature Docs → README → Verification)
+  - Documentation priority matrix (P0/P1/P2 features)
+  - Templates for ROADMAP, CHANGELOG, and feature documentation
+  - Quality checks checklist for documentation reviews
+  - Integrated into AGENTS.md alongside c-code-quality skill
+
 - **C Code Quality Improvement Skill**
   - Created reusable skill at `skills/c-code-quality/` with 7 documentation files (1,627 lines total)
   - Workflow: 4-phase process (Analysis → Prioritization → Implementation → Verification)

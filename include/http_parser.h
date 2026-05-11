@@ -18,6 +18,7 @@ typedef struct {
     const char *version;
     int header_count;
     HttpHeader headers[MAX_HEADERS];
+    char request_id[37];
 } HttpRequest;
 
 typedef struct {

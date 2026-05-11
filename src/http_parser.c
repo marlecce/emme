@@ -1,4 +1,5 @@
 #include "http_parser.h"
+#include "uuid.h"
 #include <string.h>
 #include <ctype.h>
 
@@ -40,6 +41,9 @@ int parse_http_request(char *buffer, size_t len, HttpRequest *req) {
 
     // Move the cursor past the CRLF
     cursor = line_end + 2;
+
+    // Generate unique request ID for correlation
+    generate_uuid(req->request_id);
 
     // Parse headers
     req->header_count = 0;

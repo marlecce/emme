@@ -105,6 +105,9 @@ static void set_config_defaults(ServerConfig *config)
     config->http2.keepalive_timeout = 60;
     config->http2.max_requests_per_connection = 1000;
     config->http2.max_concurrent_streams = 100;
+    
+    config->request_timeout_ms = 30000;
+    config->tls_handshake_timeout_ms = 10000;
 }
 
 static int get_yaml_string_ext(yaml_node_t *node, const char *field, char *buffer, size_t size, int line)
@@ -521,6 +524,8 @@ static int parse_server_section(ConfigParser *ctx, yaml_node_t *node)
     PARSE_FIELD("port", get_yaml_int_in_range, 1, 65535, &ctx->config->port);
     PARSE_FIELD("max_connections", get_yaml_int_in_range, 1, 1000000, &ctx->config->max_connections);
     PARSE_FIELD("shutdown_timeout_seconds", get_yaml_int_in_range, 1, 300, &ctx->config->shutdown_timeout_seconds);
+    PARSE_FIELD("request_timeout_ms", get_yaml_int_in_range, 1000, 300000, &ctx->config->request_timeout_ms);
+    PARSE_FIELD("tls_handshake_timeout_ms", get_yaml_int_in_range, 1000, 60000, &ctx->config->tls_handshake_timeout_ms);
     PARSE_STRING("log_level", ctx->config->log_level, sizeof(ctx->config->log_level));
 
     return 0;
@@ -896,5 +901,29 @@ void apply_env_overrides(ServerConfig *config)
     if (env_ssl_key) {
         strncpy(config->ssl.private_key, env_ssl_key, sizeof(config->ssl.private_key) - 1);
         config->ssl.private_key[sizeof(config->ssl.private_key) - 1] = '\0';
+    }
+    
+    const char *env_request_timeout = getenv("EMME_REQUEST_TIMEOUT");
+    if (env_request_timeout) {
+        char *endptr;
+        long timeout = strtol(env_request_timeout, &endptr, 10);
+        if (*endptr == '\0' && timeout >= 1 && timeout <= 300) {
+            config->request_timeout_ms = (int)(timeout * 1000);
+        } else {
+            fprintf(stderr, "Warning: Invalid EMME_REQUEST_TIMEOUT value '%s', using config value %dms\n", 
+                    env_request_timeout, config->request_timeout_ms);
+        }
+    }
+    
+    const char *env_tls_timeout = getenv("EMME_TLS_HANDSHAKE_TIMEOUT");
+    if (env_tls_timeout) {
+        char *endptr;
+        long timeout = strtol(env_tls_timeout, &endptr, 10);
+        if (*endptr == '\0' && timeout >= 1 && timeout <= 60) {
+            config->tls_handshake_timeout_ms = (int)(timeout * 1000);
+        } else {
+            fprintf(stderr, "Warning: Invalid EMME_TLS_HANDSHAKE_TIMEOUT value '%s', using config value %dms\n", 
+                    env_tls_timeout, config->tls_handshake_timeout_ms);
+        }
     }
 }

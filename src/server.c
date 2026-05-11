@@ -25,6 +25,7 @@
 #include "log.h"
 #include <ctype.h>
 #include "http2_response.h"
+#include "uuid.h"
 
 #ifndef DEBUG_H2
 #define DEBUG_H2 0
@@ -54,6 +55,8 @@ typedef struct {
     int want_write;
     size_t total_read;
     int request_count;
+    struct timeval request_start;
+    int request_timeout_ms;
 } H2IO;
 
 static int find_header_end(const char *buf, size_t len)
@@ -85,6 +88,7 @@ static int on_header_callback(nghttp2_session *session,
             namelen == 7 && strncmp((const char *)name, ":method", 7) == 0)
         {
             io->request_count++;
+            gettimeofday(&io->request_start, NULL);
         }
         
         StreamData *data = nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
@@ -105,6 +109,7 @@ static int on_header_callback(nghttp2_session *session,
                 log_message(LOG_LEVEL_ERROR, "Failed to allocate HTTP/2 request version");
                 return NGHTTP2_ERR_CALLBACK_FAILURE;
             }
+            generate_uuid(data->req.request_id);
             nghttp2_session_set_stream_user_data(session, frame->hd.stream_id, data);
         }
         if (namelen >= 1 && name[0] == ':')
@@ -652,11 +657,24 @@ static int perform_nonblocking_ssl_accept(SSL *ssl, int client_fd, struct io_uri
     int ret;
     struct timeval start, end;
     gettimeofday(&start, NULL);
+    
+    ServerConfig *config = SSL_get_app_data(ssl);
+    int timeout_ms = config ? config->tls_handshake_timeout_ms : 10000;
+    
     while ((ret = SSL_accept(ssl)) <= 0)
     {
         int err = SSL_get_error(ssl, ret);
         if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
         {
+            gettimeofday(&end, NULL);
+            long elapsed_ms = (end.tv_sec - start.tv_sec) * 1000 + 
+                              (end.tv_usec - start.tv_usec) / US_PER_MS;
+            if (elapsed_ms > timeout_ms) {
+                log_message(LOG_LEVEL_WARN, "TLS handshake timeout: %ldms exceeded (limit %dms)",
+                            elapsed_ms, timeout_ms);
+                return -1;
+            }
+            
             int poll_flags = (err == SSL_ERROR_WANT_READ) ? POLLIN : POLLOUT;
             struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
             if (!sqe)
@@ -764,6 +782,7 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
         .want_write = 0,
         .total_read = 0,
         .request_count = 0,
+        .request_timeout_ms = config->request_timeout_ms,
     };
     
     nghttp2_session *session = h2_session_init(&callbacks, &io, config);
@@ -794,6 +813,17 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
         if (io.request_count >= config->http2.max_requests_per_connection) {
             log_message(LOG_LEVEL_INFO, "HTTP/2 connection closed: reached max requests (%d)",
                         config->http2.max_requests_per_connection);
+            break;
+        }
+        
+        struct timeval tv_now;
+        gettimeofday(&tv_now, NULL);
+        int elapsed_ms = (int)((tv_now.tv_sec - io.request_start.tv_sec) * 1000 +
+                               (tv_now.tv_usec - io.request_start.tv_usec) / 1000);
+        if (io.request_count > 0 && elapsed_ms > io.request_timeout_ms) {
+            log_message(LOG_LEVEL_WARN, "HTTP/2 request timeout: %dms exceeded (limit %dms)",
+                        elapsed_ms, io.request_timeout_ms);
+            metrics_increment_request_timeouts();
             break;
         }
         
@@ -865,6 +895,7 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
 {
     (void)client_fd;
     struct timeval request_start;
+    int timeout_ms = config->request_timeout_ms;
 
     // Serve multiple HTTP/1.x requests on the same TLS socket
     for (;;) {
@@ -882,6 +913,24 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
                 goto shutdown_and_close;
             }
             total_read += n;
+            
+            struct timeval now;
+            gettimeofday(&now, NULL);
+            int elapsed_ms = (int)((now.tv_sec - request_start.tv_sec) * 1000 +
+                                   (now.tv_usec - request_start.tv_usec) / 1000);
+            if (elapsed_ms > timeout_ms) {
+                log_message(LOG_LEVEL_WARN, "Request timeout: %dms exceeded (limit %dms)",
+                            elapsed_ms, timeout_ms);
+                metrics_increment_request_timeouts();
+                const char *timeout_response =
+                    "HTTP/1.1 408 Request Timeout\r\n"
+                    "Content-Length: 0\r\n"
+                    "Retry-After: 5\r\n"
+                    "\r\n";
+                SSL_write(ssl, timeout_response, strlen(timeout_response));
+                goto shutdown_and_close;
+            }
+            
             header_end = find_header_end(buffer, (size_t)total_read);
             if (header_end >= 0)
                 break;
@@ -908,7 +957,7 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
             goto shutdown_and_close;
         }
 
-        log_message(LOG_LEVEL_INFO, "Valid HTTP request received. Routing...");
+        log_message(LOG_LEVEL_INFO, "Valid HTTP request received [id=%s]. Routing...", req.request_id);
 
         // 3) Route & send response (static, proxy, etc.)
         route_request_tls(&req, buffer, total_read, config, ssl, NULL);

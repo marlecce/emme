@@ -19,11 +19,13 @@ This project implements a high-performance web server in C that aims to outperfo
   - **Line Number Error Reporting:** Precise error messages with line numbers for quick debugging.
   - **Comprehensive Validation:** Range checking, type validation, and cross-field dependency checks.
   - **Sensible Defaults:** Production-ready defaults with minimal configuration required.
+  - **Environment Variable Overrides:** Runtime configuration via `EMME_CONFIG_PATH`, `EMME_PORT`, `EMME_LOG_LEVEL`, `EMME_REQUEST_TIMEOUT`, `EMME_TLS_HANDSHAKE_TIMEOUT`.
 - **HTTPS by Default:**
   - **TLS Termination:** The server terminates TLS connections using OpenSSL.
   - **SSL/TLS Configuration:** Certificate and private key settings are loaded from the configuration file.
   - **TLS 1.2/1.3 Support:** Modern TLS versions with strong cipher suites.
   - **Session Resumption:** TLS session caching and tickets for faster handshakes.
+  - **TLS Handshake Timeout:** Configurable timeout (default 10s) to prevent slow handshake attacks.
   - **Performance Optimizations:** Configurable SSL buffer sizes (32KB default), partial write support, and memory-efficient buffer release.
   - **Self-Signed Certificate for Development:** A script is provided to generate a self-signed certificate for development and testing.
   - **Production Guidance:** Clear instructions on obtaining and configuring a certificate from a trusted CA for production use.
@@ -31,13 +33,25 @@ This project implements a high-performance web server in C that aims to outperfo
   - **Keepalive Timeout:** Configurable idle connection timeout (default 60s).
   - **Request Limits:** Max requests per connection and concurrent streams to prevent resource exhaustion.
   - **ALPN Negotiation:** Automatic HTTP/2 or HTTP/1.1 selection via TLS ALPN.
+- **Request Timeout Enforcement:**
+  - **Slowloris Protection:** Configurable request timeout (default 30s) prevents connection hoarding attacks.
+  - **408 Response:** Timeout violations receive HTTP 408 with `Retry-After: 5` header.
+  - **UUID Correlation:** RFC 4122 version 4 request IDs for distributed tracing.
+  - **Lock-Free Metrics:** `emme_request_timeouts_total` counter with <1% overhead.
+- **Graceful Shutdown:**
+  - **SIGTERM Handling:** 30-second drain timeout for in-flight requests.
+  - **Connection Tracking:** Atomic reference counting for active connections.
+  - **Health Endpoint Integration:** Returns 503 with `Retry-After: 5` during drain.
+  - **Shutdown Metrics:** Duration, completed, forced closures logged.
 - **Observability:**
-  - **Prometheus Metrics:** Built-in metrics server on port 9090 with request, connection, TLS, and io_uring metrics.
+  - **Prometheus Metrics:** Built-in metrics server on port 9090 with request, connection, TLS, io_uring, and timeout metrics.
   - **Structured Logging:** JSON or plain text logs with async ring buffer for minimal overhead.
+  - **Request Correlation:** UUID-based request IDs logged for distributed tracing.
   - **Health Endpoint:** `/health` returns 200 OK or 503 Service Unavailable during graceful shutdown.
 - **Code Quality:**
-  - **Reusable Skill:** `skills/c-code-quality/` with documented workflow, patterns, and examples.
+  - **Reusable Skills:** `skills/c-code-quality/` and `skills/auto-docs/` with documented workflows, patterns, and examples.
   - **Systematic Refactoring:** 4-phase process (Analysis → Prioritization → Implementation → Verification).
+  - **Automated Documentation:** 7-phase documentation update workflow triggered on feature completion.
   - **Quality Gates:** Zero warnings, 100% test pass rate, functions <100 lines target.
 
 ## Project Structure
