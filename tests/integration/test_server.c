@@ -396,7 +396,7 @@ Test(https_blackbox, health_endpoint_json_format)
         }
 
         if (header_end > 0 && content_length >= 0 && 
-            total >= (size_t)(header_end + content_length))
+            total >= header_end + content_length)
             break;
     }
 

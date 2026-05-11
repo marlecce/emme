@@ -1,8 +1,10 @@
+#define _DEFAULT_SOURCE
 #include <criterion/criterion.h>
 #include <criterion/internal/assert.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
 #include "uuid.h"
 #include "http_status.h"
 
