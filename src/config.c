@@ -108,6 +108,9 @@ static void set_config_defaults(ServerConfig *config)
     
     config->request_timeout_ms = 30000;
     config->tls_handshake_timeout_ms = 10000;
+    
+    config->security_headers.enabled = true;
+    config->security_headers.header_count = 0;
 }
 
 static int get_yaml_string_ext(yaml_node_t *node, const char *field, char *buffer, size_t size, int line)
@@ -450,6 +453,109 @@ static int parse_circuit_breaker_config(yaml_document_t *doc, yaml_node_t *node,
     return 0;
 }
 
+static int parse_security_headers_config(yaml_document_t *doc, yaml_node_t *node, SecurityHeadersConfig *shc)
+{
+    if (!node || node->type != YAML_MAPPING_NODE) {
+        shc->enabled = false;
+        shc->header_count = 0;
+        return 0;
+    }
+    
+    shc->enabled = false;
+    shc->header_count = 0;
+    
+    yaml_node_t *field;
+    
+    field = find_yaml_node(doc, node, "enabled");
+    if (field) {
+        int val;
+        if (get_yaml_bool(field, "security_headers.enabled", &val) == 0) {
+            shc->enabled = (bool)val;
+        }
+    }
+    
+    yaml_node_t *headers_node = find_yaml_node(doc, node, "headers");
+    if (headers_node && headers_node->type == YAML_SEQUENCE_NODE) {
+        for (yaml_node_item_t *item = headers_node->data.sequence.items.start;
+             item < headers_node->data.sequence.items.top && shc->header_count < MAX_SECURITY_HEADERS;
+             item++) {
+            yaml_node_t *header_node = yaml_document_get_node(doc, *item);
+            if (!header_node || header_node->type != YAML_MAPPING_NODE)
+                continue;
+            
+            yaml_node_t *name_node = find_yaml_node(doc, header_node, "name");
+            yaml_node_t *value_node = find_yaml_node(doc, header_node, "value");
+            
+            if (name_node && value_node) {
+                SecurityHeader *header = &shc->headers[shc->header_count];
+                if (get_yaml_string(name_node, "security_headers[].name", header->name, sizeof(header->name)) == 0 &&
+                    get_yaml_string(value_node, "security_headers[].value", header->value, sizeof(header->value)) == 0) {
+                    shc->header_count++;
+                }
+            }
+        }
+    }
+    
+    return 0;
+}
+
+static int parse_cors_config(yaml_document_t *doc, yaml_node_t *node, CORSConfig *cors)
+{
+    if (!node || node->type != YAML_MAPPING_NODE) {
+        cors->enabled = false;
+        cors->allow_credentials = false;
+        cors->max_age_seconds = 86400;
+        return 0;
+    }
+    
+    cors->enabled = false;
+    cors->allow_credentials = false;
+    cors->max_age_seconds = 86400;
+    
+    yaml_node_t *field;
+    
+    field = find_yaml_node(doc, node, "enabled");
+    if (field) {
+        int val;
+        if (get_yaml_bool(field, "cors.enabled", &val) == 0) {
+            cors->enabled = (bool)val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "allow_origin");
+    if (field) {
+        get_yaml_string(field, "cors.allow_origin", cors->allow_origin, sizeof(cors->allow_origin));
+    }
+    
+    field = find_yaml_node(doc, node, "allow_methods");
+    if (field) {
+        get_yaml_string(field, "cors.allow_methods", cors->allow_methods, sizeof(cors->allow_methods));
+    }
+    
+    field = find_yaml_node(doc, node, "allow_headers");
+    if (field) {
+        get_yaml_string(field, "cors.allow_headers", cors->allow_headers, sizeof(cors->allow_headers));
+    }
+    
+    field = find_yaml_node(doc, node, "allow_credentials");
+    if (field) {
+        int val;
+        if (get_yaml_bool(field, "cors.allow_credentials", &val) == 0) {
+            cors->allow_credentials = (bool)val;
+        }
+    }
+    
+    field = find_yaml_node(doc, node, "max_age_seconds");
+    if (field) {
+        int val;
+        if (get_yaml_int(field, "cors.max_age_seconds", &val) == 0) {
+            cors->max_age_seconds = val;
+        }
+    }
+    
+    return 0;
+}
+
 int parse_backend_url(const char *backend, char *host, size_t host_size, int *port)
 {
     char temp_host[256];
@@ -702,6 +808,21 @@ static int parse_route_entry(ConfigParser *ctx, yaml_node_t *route_node)
     
     yaml_node_t *cb_node = find_yaml_node(ctx->document, route_node, "circuit_breaker");
     parse_circuit_breaker_config(ctx->document, cb_node, &route->circuit_breaker);
+    
+    yaml_node_t *sh_node = find_yaml_node(ctx->document, route_node, "security_headers");
+    parse_security_headers_config(ctx->document, sh_node, &route->security_headers);
+    
+    yaml_node_t *cors_node = find_yaml_node(ctx->document, route_node, "cors");
+    parse_cors_config(ctx->document, cors_node, &route->cors);
+    
+    route->inherit_global_headers = true;
+    yaml_node_t *inherit_node = find_yaml_node(ctx->document, route_node, "inherit_global_headers");
+    if (inherit_node) {
+        int val;
+        if (get_yaml_bool(inherit_node, "routes[].inherit_global_headers", &val) == 0) {
+            route->inherit_global_headers = (bool)val;
+        }
+    }
 
     if (route->document_root[0] != '\0') {
         if (realpath(route->document_root, route->document_root_real)) {
@@ -831,6 +952,9 @@ int load_config(ServerConfig *config, const char *file_path)
     node = find_yaml_node(&document, root, "routes");
     if (node && parse_routes_section(&ctx, node) != 0)
         goto cleanup;
+
+    node = find_yaml_node(&document, root, "security_headers");
+    parse_security_headers_config(&document, node, &config->security_headers);
 
     if (validate_config(config) != 0)
         goto cleanup;

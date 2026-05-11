@@ -50,6 +50,8 @@ typedef struct {
     MetricCounter requests_total;
     MetricCounter tls_handshakes_total;
     MetricCounter request_timeouts_total;
+    MetricCounter security_headers_sent_total;
+    MetricCounter cors_headers_sent_total;
     MetricGauge active_connections;
     MetricGauge thread_pool_active_threads;
     MetricGauge thread_pool_queue_depth;
@@ -79,6 +81,8 @@ void metrics_stop_server(void);
 void metrics_increment_request(const char *method, const char *path, int status);
 void metrics_record_request_duration(double duration_seconds);
 void metrics_increment_request_timeouts(void);
+void metrics_increment_security_headers_sent(void);
+void metrics_increment_cors_headers_sent(void);
 void metrics_set_active_connections(long count);
 void metrics_set_thread_pool_stats(int active_threads, int queue_depth);
 void metrics_increment_tls_handshake(int success);

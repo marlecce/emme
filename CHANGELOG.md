@@ -5,9 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] - 2026-05-11
 
 ### Added
+- **Security Headers Implementation**
+  - Configurable security headers via YAML `security_headers` section
+  - 6 default security headers: HSTS, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, CSP, Referrer-Policy
+  - Per-route security header overrides with inheritance model
+  - CORS support for API endpoints with configurable origin, methods, headers, credentials, max-age
+  - HTTP/1.1 integration via `add_security_headers_to_buffer()` and `add_cors_headers_to_buffer()`
+  - HTTP/2 integration via `h2_response_add_security_headers()`
+  - Metrics counters: `emme_security_headers_sent_total`, `emme_cors_headers_sent_total`
+  - Pre-computed headers at startup (zero runtime string formatting overhead)
+  - 11 unit tests for security headers configuration and HTTP/1.1/HTTP/2 integration
+
 - **Request Timeout Enforcement**
   - Configurable request timeout (default 30s) via YAML and `EMME_REQUEST_TIMEOUT` env var
   - Configurable TLS handshake timeout (default 10s) via YAML and `EMME_TLS_HANDSHAKE_TIMEOUT` env var

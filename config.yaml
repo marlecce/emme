@@ -31,6 +31,22 @@ http2:
   max_requests_per_connection: 1000
   max_concurrent_streams: 100
 
+security_headers:
+  enabled: true
+  headers:
+    - name: "Strict-Transport-Security"
+      value: "max-age=31536000; includeSubDomains"
+    - name: "X-Content-Type-Options"
+      value: "nosniff"
+    - name: "X-Frame-Options"
+      value: "DENY"
+    - name: "X-XSS-Protection"
+      value: "1; mode=block"
+    - name: "Content-Security-Policy"
+      value: "default-src 'self'"
+    - name: "Referrer-Policy"
+      value: "strict-origin-when-cross-origin"
+
 routes:
     - path: "/static/"
       technology: "static"
@@ -38,3 +54,10 @@ routes:
     - path: "/api/"
       technology: "reverse_proxy"
       backend: "127.0.0.1:8081"
+      cors:
+        enabled: true
+        allow_origin: "*"
+        allow_methods: "GET, POST, OPTIONS"
+        allow_headers: "Content-Type, Authorization"
+        allow_credentials: false
+        max_age_seconds: 86400

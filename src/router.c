@@ -41,7 +41,7 @@ typedef enum {
     STATIC_LOOKUP_FORBIDDEN = 3,
 } StaticLookupResult;
 
-static int send_health_response(SSL *ssl, Http2Response *h2resp)
+static int send_health_response(SSL *ssl, Http2Response *h2resp, ServerConfig *config)
 {
     const char *body = "{\"status\":\"ok\"}";
     size_t body_len = strlen(body);
@@ -56,6 +56,7 @@ static int send_health_response(SSL *ssl, Http2Response *h2resp)
             h2_response_set_status(h2resp, HTTP_STATUS_SERVICE_UNAVAILABLE, "Service Unavailable");
             h2_response_set_content_type(h2resp, "application/json");
             h2_response_set_body(h2resp, draining_body, draining_len);
+            h2_response_add_security_headers(h2resp, &config->security_headers, NULL);
             h2_response_finalize(h2resp);
         } else {
             const char *headers =
@@ -76,6 +77,7 @@ static int send_health_response(SSL *ssl, Http2Response *h2resp)
         h2_response_set_status(h2resp, HTTP_STATUS_OK, "OK");
         h2_response_set_content_type(h2resp, "application/json");
         h2_response_set_body(h2resp, body, body_len);
+        h2_response_add_security_headers(h2resp, &config->security_headers, NULL);
         h2_response_finalize(h2resp);
     } else {
         const char *headers =
@@ -95,6 +97,53 @@ static int is_health_check(const HttpRequest *req)
     return (strcmp(req->path, "/health") == 0);
 }
 
+static SecurityHeadersConfig *get_security_headers_for_request(HttpRequest *req, ServerConfig *config)
+{
+    static SecurityHeadersConfig default_config = {0};
+    
+    if (!config || !req || !req->path)
+        return &default_config;
+    
+    for (int i = 0; i < config->route_count; i++) {
+        Route *route = &config->routes[i];
+        size_t path_len = strlen(route->path);
+        
+        if (strncmp(req->path, route->path, path_len) == 0) {
+            if (route->security_headers.enabled) {
+                return &route->security_headers;
+            }
+            if (route->inherit_global_headers) {
+                return &config->security_headers;
+            }
+            return &default_config;
+        }
+    }
+    
+    return &config->security_headers;
+}
+
+static CORSConfig *get_cors_config_for_request(HttpRequest *req, ServerConfig *config)
+{
+    static CORSConfig default_cors = {0};
+    
+    if (!config || !req || !req->path)
+        return &default_cors;
+    
+    for (int i = 0; i < config->route_count; i++) {
+        Route *route = &config->routes[i];
+        size_t path_len = strlen(route->path);
+        
+        if (strncmp(req->path, route->path, path_len) == 0) {
+            if (route->cors.enabled) {
+                return &route->cors;
+            }
+            return &default_cors;
+        }
+    }
+    
+    return &default_cors;
+}
+
 static int ssl_write_all(SSL *ssl, const char *buf, size_t len)
 {
     size_t total = 0;
@@ -110,24 +159,136 @@ static int ssl_write_all(SSL *ssl, const char *buf, size_t len)
     return 0;
 }
 
-static int send_simple_response(SSL *ssl, const char *status_line,
-                                const char *content_type, const char *body)
+#define SECURITY_HEADERS_BUFFER_SIZE 1024
+
+static int add_security_headers_to_buffer(char *buffer, size_t *len, SecurityHeadersConfig *config)
+{
+    if (!config || !config->enabled || *len >= SECURITY_HEADERS_BUFFER_SIZE)
+        return 0;
+    
+    size_t remaining = SECURITY_HEADERS_BUFFER_SIZE - *len;
+    int written = 0;
+    
+    for (int i = 0; i < config->header_count && remaining > 20; i++) {
+        const SecurityHeader *header = &config->headers[i];
+        int header_len = snprintf(buffer + *len, remaining, "%s: %s\r\n", 
+                                  header->name, header->value);
+        if (header_len > 0 && (size_t)header_len < remaining) {
+            *len += (size_t)header_len;
+            remaining -= (size_t)header_len;
+            written++;
+        } else {
+            break;
+        }
+    }
+    
+    if (written > 0) {
+        metrics_increment_security_headers_sent();
+    }
+    
+    return written;
+}
+
+static int add_cors_headers_to_buffer(char *buffer, size_t *len, CORSConfig *cors)
+{
+    if (!cors || !cors->enabled || *len >= SECURITY_HEADERS_BUFFER_SIZE)
+        return 0;
+    
+    size_t remaining = SECURITY_HEADERS_BUFFER_SIZE - *len;
+    int written = 0;
+    int header_len;
+    
+    if (cors->allow_origin[0] != '\0') {
+        header_len = snprintf(buffer + *len, remaining, "Access-Control-Allow-Origin: %s\r\n",
+                             cors->allow_origin);
+        if (header_len > 0 && (size_t)header_len < remaining) {
+            *len += (size_t)header_len;
+            remaining -= (size_t)header_len;
+            written++;
+        }
+    }
+    
+    if (cors->allow_methods[0] != '\0' && remaining > 30) {
+        header_len = snprintf(buffer + *len, remaining, "Access-Control-Allow-Methods: %s\r\n",
+                             cors->allow_methods);
+        if (header_len > 0 && (size_t)header_len < remaining) {
+            *len += (size_t)header_len;
+            remaining -= (size_t)header_len;
+            written++;
+        }
+    }
+    
+    if (cors->allow_headers[0] != '\0' && remaining > 30) {
+        header_len = snprintf(buffer + *len, remaining, "Access-Control-Allow-Headers: %s\r\n",
+                             cors->allow_headers);
+        if (header_len > 0 && (size_t)header_len < remaining) {
+            *len += (size_t)header_len;
+            remaining -= (size_t)header_len;
+            written++;
+        }
+    }
+    
+    if (cors->allow_credentials && remaining > 40) {
+        header_len = snprintf(buffer + *len, remaining, "Access-Control-Allow-Credentials: true\r\n");
+        if (header_len > 0 && (size_t)header_len < remaining) {
+            *len += (size_t)header_len;
+            remaining -= (size_t)header_len;
+            written++;
+        }
+    }
+    
+    if (cors->max_age_seconds > 0 && remaining > 30) {
+        header_len = snprintf(buffer + *len, remaining, "Access-Control-Max-Age: %d\r\n",
+                             cors->max_age_seconds);
+        if (header_len > 0 && (size_t)header_len < remaining) {
+            *len += (size_t)header_len;
+            remaining -= (size_t)header_len;
+            written++;
+        }
+    }
+    
+    if (written > 0) {
+        metrics_increment_cors_headers_sent();
+    }
+    
+    return written;
+}
+
+static int send_simple_response_with_config(SSL *ssl, const char *status_line,
+                                            const char *content_type, const char *body,
+                                            HttpRequest *req, ServerConfig *config)
 {
     size_t body_len = body ? strlen(body) : 0;
+    SecurityHeadersConfig *sec_headers = get_security_headers_for_request(req, config);
+    CORSConfig *cors = get_cors_config_for_request(req, config);
+    
     char header[HEADER_BUFFER_SIZE];
     int header_len = snprintf(header, sizeof(header),
-                              "%s\r\n%sContent-Length: %zu\r\n\r\n",
+                              "%s\r\n%sContent-Length: %zu\r\n",
                               status_line,
                               content_type ? content_type : "",
                               body_len);
     if (header_len < 0 || (size_t)header_len >= sizeof(header))
         return -1;
-    if (ssl_write_all(ssl, header, (size_t)header_len) != 0)
+    
+    size_t current_len = (size_t)header_len;
+    add_security_headers_to_buffer(header, &current_len, sec_headers);
+    add_cors_headers_to_buffer(header, &current_len, cors);
+    
+    if (current_len + 2 >= sizeof(header))
+        return -1;
+    
+    strcpy(header + current_len, "\r\n");
+    current_len += 2;
+    
+    if (ssl_write_all(ssl, header, current_len) != 0)
         return -1;
     if (body_len > 0 && ssl_write_all(ssl, body, body_len) != 0)
         return -1;
     return 0;
 }
+
+
 
 static int populate_http2_response(Http2Response *resp, const char *body,
                                    int status_code, const char *status_text,
@@ -275,6 +436,9 @@ static int serve_static_h2(HttpRequest *req, ServerConfig *config, Http2Response
     h2_response_set_status(h2resp, HTTP_STATUS_OK, "OK");
     h2_response_set_content_type(h2resp, content_type);
 
+    SecurityHeadersConfig *sec_headers = get_security_headers_for_request(req, config);
+    CORSConfig *cors = get_cors_config_for_request(req, config);
+
     size_t total = 0;
     while (total < (size_t)filesize)
     {
@@ -291,6 +455,7 @@ static int serve_static_h2(HttpRequest *req, ServerConfig *config, Http2Response
     close(fd);
 
     h2_response_set_body_len(h2resp, total);
+    h2_response_add_security_headers(h2resp, sec_headers, cors);
     h2_response_finalize(h2resp);
     return 0;
 }
@@ -330,18 +495,37 @@ int serve_static_tls(HttpRequest *req, ServerConfig *config, SSL *ssl)
     if (lookup == STATIC_LOOKUP_NO_ROUTE)
         return -1;
     if (lookup == STATIC_LOOKUP_NOT_FOUND)
-        return send_simple_response(ssl, "HTTP/1.1 404 Not Found", NULL, NULL);
+        return send_simple_response_with_config(ssl, "HTTP/1.1 404 Not Found", NULL, NULL, req, config);
     if (lookup == STATIC_LOOKUP_FORBIDDEN)
-        return send_simple_response(ssl, "HTTP/1.1 403 Forbidden", NULL, NULL);
+        return send_simple_response_with_config(ssl, "HTTP/1.1 403 Forbidden", NULL, NULL, req, config);
     if (lookup == STATIC_LOOKUP_ERROR)
         return -1;
 
+    SecurityHeadersConfig *sec_headers = get_security_headers_for_request(req, config);
+    CORSConfig *cors = get_cors_config_for_request(req, config);
+    
     char header[HEADER_BUFFER_SIZE];
     int header_len = snprintf(header, sizeof(header),
-                              "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n\r\n",
+                              "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n",
                               content_type, (long)filesize);
-    if (header_len < 0 || (size_t)header_len >= sizeof(header) ||
-        ssl_write_all(ssl, header, (size_t)header_len) != 0)
+    if (header_len < 0 || (size_t)header_len >= sizeof(header)) {
+        close(fd);
+        return -1;
+    }
+    
+    size_t current_len = (size_t)header_len;
+    add_security_headers_to_buffer(header, &current_len, sec_headers);
+    add_cors_headers_to_buffer(header, &current_len, cors);
+    
+    if (current_len + 2 >= sizeof(header)) {
+        close(fd);
+        return -1;
+    }
+    
+    strcpy(header + current_len, "\r\n");
+    current_len += 2;
+    
+    if (ssl_write_all(ssl, header, current_len) != 0)
     {
         close(fd);
         return -1;
@@ -472,12 +656,14 @@ int proxy_request_tls(HttpRequest *req, const char *raw_request, size_t req_len,
     return -1;
 }
 
-static void set_h2_response(Http2Response *h2resp, int status, const char *body, size_t body_len)
+static void set_h2_response(Http2Response *h2resp, int status, const char *body, size_t body_len,
+                            SecurityHeadersConfig *sec_headers, CORSConfig *cors)
 {
     h2_response_init(h2resp);
     h2_response_set_status(h2resp, status, "OK");
     h2_response_set_content_type(h2resp, "application/json");
     h2_response_set_body(h2resp, body, body_len);
+    h2_response_add_security_headers(h2resp, sec_headers, cors);
     h2_response_finalize(h2resp);
 }
 
@@ -493,7 +679,8 @@ static int proxy_to_backend_pooled(HttpRequest *req, Route *route,
         log_message(LOG_LEVEL_WARN, "Circuit breaker OPEN, rejecting request to %s",
                    route->backend);
         set_h2_response(h2resp, HTTP_STATUS_SERVICE_UNAVAILABLE, 
-                       CIRCUIT_BREAKER_ERROR_BODY, CIRCUIT_BREAKER_ERROR_LEN);
+                       CIRCUIT_BREAKER_ERROR_BODY, CIRCUIT_BREAKER_ERROR_LEN,
+                       &route->security_headers, &route->cors);
         return -1;
     }
     
@@ -529,7 +716,8 @@ static int proxy_to_backend_pooled(HttpRequest *req, Route *route,
     resp_body = http2_client_get_response_body(&conn->client);
     resp_len = http2_client_get_response_length(&conn->client);
     
-    set_h2_response(h2resp, status, resp_body, resp_len);
+    set_h2_response(h2resp, status, resp_body, resp_len,
+                    &route->security_headers, &route->cors);
     
     log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: received response status=%d, length=%zu", 
                 status, resp_len);
@@ -594,7 +782,8 @@ static int proxy_to_backend_direct(HttpRequest *req, Route *route,
     resp_body = http2_client_get_response_body(&client);
     resp_len = http2_client_get_response_length(&client);
     
-    set_h2_response(h2resp, status, resp_body, resp_len);
+    set_h2_response(h2resp, status, resp_body, resp_len,
+                    &route->security_headers, &route->cors);
     
     log_message(LOG_LEVEL_INFO, "HTTP/2 proxy: received response status=%d, length=%zu", 
                 status, resp_len);
@@ -666,7 +855,7 @@ int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerC
 
     /* Health check endpoint - highest priority */
     if (is_health_check(req)) {
-        return send_health_response(ssl, h2resp);
+        return send_health_response(ssl, h2resp, config);
     }
 
     if (h2resp)
@@ -692,15 +881,15 @@ int route_request_tls(HttpRequest *req, const char *raw, size_t raw_len, ServerC
     }
 
     if (strcmp(req->path, "/") == 0)
-        return send_simple_response(ssl, "HTTP/1.1 200 OK", "Content-Type: text/html\r\n",
-                                    root_body);
+        return send_simple_response_with_config(ssl, "HTTP/1.1 200 OK", "Content-Type: text/html\r\n",
+                                                root_body, req, config);
 
     if (serve_static_tls(req, config, ssl) == 0)
         return 0;
     if (proxy_request_tls(req, raw, raw_len, config, ssl) == 0)
         return 0;
 
-    if (send_simple_response(ssl, "HTTP/1.1 404 Not Found", NULL, NULL) != 0)
+    if (send_simple_response_with_config(ssl, "HTTP/1.1 404 Not Found", NULL, NULL, req, config) != 0)
         return -1;
     return -1;
 }

@@ -5,6 +5,9 @@
 #define MAX_LOG_LEVEL 16
 #define BACKEND_POOL_DEFAULT_SIZE 10
 #define BACKEND_POOL_IDLE_TIMEOUT_SEC 60
+#define MAX_SECURITY_HEADERS 10
+#define MAX_HEADER_NAME 64
+#define MAX_HEADER_VALUE 256
 
 #include <limits.h>
 #include <stdbool.h>
@@ -33,6 +36,26 @@ typedef struct {
 typedef struct backend_pool_s RouteBackendPool;
 
 typedef struct {
+    char name[MAX_HEADER_NAME];
+    char value[MAX_HEADER_VALUE];
+} SecurityHeader;
+
+typedef struct {
+    bool enabled;
+    SecurityHeader headers[MAX_SECURITY_HEADERS];
+    int header_count;
+} SecurityHeadersConfig;
+
+typedef struct {
+    bool enabled;
+    char allow_origin[256];
+    char allow_methods[128];
+    char allow_headers[256];
+    bool allow_credentials;
+    int max_age_seconds;
+} CORSConfig;
+
+typedef struct {
     char path[128];       
     char technology[32];   
     char document_root[256];
@@ -45,6 +68,9 @@ typedef struct {
     HealthCheckConfig health_check;
     ConnectionPoolConfig connection_pool;
     CircuitBreakerConfig circuit_breaker;
+    SecurityHeadersConfig security_headers;
+    bool inherit_global_headers;
+    CORSConfig cors;
     RouteBackendPool *pool;
 } Route;
 
@@ -77,6 +103,7 @@ typedef struct {
     LoggingConfig logging;
     SSLConfig ssl;
     HTTP2Config http2;
+    SecurityHeadersConfig security_headers;
 } ServerConfig;
 
 int load_config(ServerConfig *config, const char *file_path);

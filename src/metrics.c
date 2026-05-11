@@ -50,6 +50,14 @@ void metrics_init(void)
     g_metrics.request_timeouts_total.metadata.help = "Total number of request timeouts";
     g_metrics.request_timeouts_total.metadata.type = "counter";
     
+    g_metrics.security_headers_sent_total.metadata.name = "emme_security_headers_sent_total";
+    g_metrics.security_headers_sent_total.metadata.help = "Total number of security headers sent";
+    g_metrics.security_headers_sent_total.metadata.type = "counter";
+    
+    g_metrics.cors_headers_sent_total.metadata.name = "emme_cors_headers_sent_total";
+    g_metrics.cors_headers_sent_total.metadata.help = "Total number of CORS headers sent";
+    g_metrics.cors_headers_sent_total.metadata.type = "counter";
+    
     g_metrics.active_connections.metadata.name = "emme_active_connections";
     g_metrics.active_connections.metadata.help = "Number of active connections";
     g_metrics.active_connections.metadata.type = "gauge";
@@ -170,6 +178,16 @@ void metrics_record_request_duration(double duration_seconds)
 void metrics_increment_request_timeouts(void)
 {
     atomic_fetch_add(&g_metrics.request_timeouts_total.value, 1);
+}
+
+void metrics_increment_security_headers_sent(void)
+{
+    atomic_fetch_add(&g_metrics.security_headers_sent_total.value, 1);
+}
+
+void metrics_increment_cors_headers_sent(void)
+{
+    atomic_fetch_add(&g_metrics.cors_headers_sent_total.value, 1);
 }
 
 void metrics_set_active_connections(long count)
@@ -340,6 +358,16 @@ char *metrics_format_prometheus(void)
     
     written = format_counter(buffer + offset, METRICS_BUFFER_SIZE - offset,
                             &g_metrics.request_timeouts_total);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_counter(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                            &g_metrics.security_headers_sent_total);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_counter(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                            &g_metrics.cors_headers_sent_total);
     if (written < 0) goto truncation_error;
     offset += (size_t)written;
     

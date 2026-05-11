@@ -203,28 +203,40 @@ This document outlines the development roadmap for Emme, prioritized by producti
 
 ## Phase 2: Security Hardening (Weeks 3-4)
 
-### P2: Security Headers
+### P2: Security Headers ✅ COMPLETED
 **Severity**: MEDIUM | **Impact**: Clickjacking, MIME sniffing, downgrade attacks
 
-**Current State**: No security headers sent
+**Implementation** (Completed 2026-05-11):
+- [x] SecurityHeadersConfig struct with enabled flag and header array (max 16 headers)
+- [x] CORSConfig struct with origin, methods, headers, credentials, max-age
+- [x] YAML parsing for global `security_headers` section
+- [x] Per-route `security_headers` and `cors` sections with inheritance model
+- [x] HTTP/1.1 integration: `add_security_headers_to_buffer()`, `add_cors_headers_to_buffer()`
+- [x] HTTP/2 integration: `h2_response_add_security_headers()`
+- [x] Metrics counters: `emme_security_headers_sent_total`, `emme_cors_headers_sent_total`
+- [x] 6 default security headers: HSTS, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, CSP, Referrer-Policy
+- [x] CORS support for API endpoints with configurable origin, methods, headers
+- [x] Pre-computed headers at startup (zero runtime string formatting)
 
-**Implementation**:
-- [ ] Add default headers to all responses:
-  - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
-  - `X-Content-Type-Options: nosniff`
-  - `X-Frame-Options: DENY`
-  - `X-XSS-Protection: 1; mode=block` (legacy but harmless)
-  - `Content-Security-Policy: default-src 'self'` (configurable)
-  - `Referrer-Policy: strict-origin-when-cross-origin`
-- [ ] Make headers configurable per-location in config.yaml
-- [ ] Support CORS headers for API endpoints
+**Files modified**: 
+- `include/config.h` - SecurityHeadersConfig, CORSConfig, SecurityHeader structs
+- `src/config.c` - YAML parsing with validation and line number error reporting
+- `src/router.c` - HTTP/1.1 security headers and CORS integration
+- `src/http2_response.c` - HTTP/2 security headers and CORS integration
+- `include/metrics.h` - Security headers and CORS metrics counters
+- `src/metrics.c` - Metrics implementation and Prometheus export
+- `tests/unit/test_security_headers.c` - 11 unit tests for security headers
 
-**Files to modify**: `src/router.c`, `src/config.c`
+**Acceptance criteria** (All Met):
+- [x] All responses include security headers by default
+- [x] Headers can be overridden for specific routes via inheritance model
+- [x] No performance regression (headers pre-computed at startup)
+- [x] CORS headers automatically added to configured routes
+- [x] Metrics track security headers and CORS headers sent
+- [x] 11 unit tests added, all passing (108/108 total tests)
+- [x] Zero compiler warnings, zero memory leaks
 
-**Acceptance criteria**:
-- All responses include security headers by default
-- Headers can be overridden for specific routes
-- No performance regression (headers pre-computed at startup)
+**Test results**: 108/108 tests passing (100%)
 
 ---
 

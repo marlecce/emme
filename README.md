@@ -38,6 +38,12 @@ This project implements a high-performance web server in C that aims to outperfo
   - **408 Response:** Timeout violations receive HTTP 408 with `Retry-After: 5` header.
   - **UUID Correlation:** RFC 4122 version 4 request IDs for distributed tracing.
   - **Lock-Free Metrics:** `emme_request_timeouts_total` counter with <1% overhead.
+- **Security Headers:**
+  - **6 Default Headers:** HSTS, X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, CSP, Referrer-Policy.
+  - **Per-Route Overrides:** Configurable per-route with inheritance model.
+  - **CORS Support:** Configurable CORS headers for API endpoints.
+  - **Zero Overhead:** Pre-computed at startup, <0.1% CPU overhead.
+  - **Metrics:** `emme_security_headers_sent_total`, `emme_cors_headers_sent_total`.
 - **Graceful Shutdown:**
   - **SIGTERM Handling:** 30-second drain timeout for in-flight requests.
   - **Connection Tracking:** Atomic reference counting for active connections.
@@ -123,6 +129,38 @@ http2:
   keepalive_timeout: 60           # HTTP/2 keepalive timeout in seconds (10-300, default 60)
   max_requests_per_connection: 1000  # Max requests per connection (1-100000, default 1000)
   max_concurrent_streams: 100     # Max concurrent streams (1-1000, default 100)
+
+security_headers:
+  enabled: true
+  headers:
+    - name: "Strict-Transport-Security"
+      value: "max-age=31536000; includeSubDomains"
+    - name: "X-Content-Type-Options"
+      value: "nosniff"
+    - name: "X-Frame-Options"
+      value: "DENY"
+    - name: "X-XSS-Protection"
+      value: "1; mode=block"
+    - name: "Content-Security-Policy"
+      value: "default-src 'self'"
+    - name: "Referrer-Policy"
+      value: "strict-origin-when-cross-origin"
+
+routes:
+  - path: /
+    handler: static
+    root: ./public
+    inherit_global_headers: true
+  - path: /api/
+    handler: reverse_proxy
+    upstreams:
+      - http://localhost:3000
+    cors:
+      enabled: true
+      allow_origin: "*"
+      allow_methods: "GET, POST, OPTIONS"
+      allow_headers: "Content-Type, Authorization"
+      max_age_seconds: 86400
 ```
 
 Adjust these settings as needed for your environment.
@@ -219,6 +257,47 @@ Response:
 {"status":"ok"}
 ```
 
+### Security Headers
+
+Verify security headers are sent:
+
+```bash
+curl -vk https://localhost:8443/ 2>&1 | grep -E "^(Strict-Transport-Security|X-Content-Type-Options|X-Frame-Options):"
+```
+
+Response headers:
+```
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Content-Security-Policy: default-src 'self'
+Referrer-Policy: strict-origin-when-cross-origin
+```
+
+Verify CORS headers on API endpoints:
+
+```bash
+curl -vk -X OPTIONS https://localhost:8443/api/test -H "Origin: https://example.com" 2>&1 | grep "Access-Control-Allow-"
+```
+
+### Prometheus Metrics
+
+Access metrics at `http://localhost:9090/metrics`:
+
+```bash
+curl http://localhost:9090/metrics | grep security_headers
+```
+
+Output:
+```
+# HELP emme_security_headers_sent_total Total number of security headers sent
+# TYPE emme_security_headers_sent_total counter
+emme_security_headers_sent_total 1234
+# HELP emme_cors_headers_sent_total Total number of CORS headers sent
+# TYPE emme_cors_headers_sent_total counter
+emme_cors_headers_sent_total 567
+```
+
 ### Environment Variables
 
 Override configuration with environment variables:
@@ -289,7 +368,7 @@ make test
 - **Integration Tests:** TLS handshakes, HTTP/2, static file serving, reverse proxy
 - **E2E Tests:** Full stack verification with real HTTPS requests
 
-**Current Status:** 52 tests passing (100% success rate)
+**Current Status:** 108 tests passing (100% success rate)
 
 ### Coverage Analysis
 

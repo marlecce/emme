@@ -3,6 +3,7 @@
 
 #include <nghttp2/nghttp2.h>
 #include "server.h"
+#include "config.h"
 
 #define MAKE_NV(NAME, VALUE) (nghttp2_nv){(uint8_t *)(NAME), (uint8_t *)(VALUE), strlen(NAME), strlen(VALUE), NGHTTP2_NV_FLAG_NONE}
 
@@ -25,5 +26,6 @@ void h2_response_set_body(Http2Response *resp, const char *body, size_t len);
 void h2_response_set_body_len(Http2Response *resp, size_t len);
 void h2_response_set_content_type(Http2Response *resp, const char *content_type);
 void h2_response_finalize(Http2Response *resp);
+void h2_response_add_security_headers(Http2Response *resp, SecurityHeadersConfig *config, CORSConfig *cors);
 
 #endif // HTTP2_RESPONSE_H

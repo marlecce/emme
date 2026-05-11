@@ -890,6 +890,28 @@ static void handle_http2_connection(SSL *ssl, int client_fd, ServerConfig *confi
     nghttp2_session_callbacks_del(callbacks);
 }
 
+#define SERVER_SECURITY_HEADERS_BUFFER_SIZE 512
+
+static void add_global_security_headers(char *buffer, size_t *len, SecurityHeadersConfig *config)
+{
+    if (!config || !config->enabled || *len >= SERVER_SECURITY_HEADERS_BUFFER_SIZE)
+        return;
+    
+    size_t remaining = SERVER_SECURITY_HEADERS_BUFFER_SIZE - *len;
+    
+    for (int i = 0; i < config->header_count && remaining > 20; i++) {
+        const SecurityHeader *header = &config->headers[i];
+        int header_len = snprintf(buffer + *len, remaining, "%s: %s\r\n", 
+                                  header->name, header->value);
+        if (header_len > 0 && (size_t)header_len < remaining) {
+            *len += (size_t)header_len;
+            remaining -= (size_t)header_len;
+        } else {
+            break;
+        }
+    }
+}
+
 /* HTTP/1.1 connection handler - synchronous SSL I/O with keep-alive */
 static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *config)
 {
@@ -918,16 +940,24 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
             gettimeofday(&now, NULL);
             int elapsed_ms = (int)((now.tv_sec - request_start.tv_sec) * 1000 +
                                    (now.tv_usec - request_start.tv_usec) / 1000);
-            if (elapsed_ms > timeout_ms) {
+             if (elapsed_ms > timeout_ms) {
                 log_message(LOG_LEVEL_WARN, "Request timeout: %dms exceeded (limit %dms)",
                             elapsed_ms, timeout_ms);
                 metrics_increment_request_timeouts();
-                const char *timeout_response =
-                    "HTTP/1.1 408 Request Timeout\r\n"
-                    "Content-Length: 0\r\n"
-                    "Retry-After: 5\r\n"
-                    "\r\n";
-                SSL_write(ssl, timeout_response, strlen(timeout_response));
+                
+                char timeout_response[SERVER_SECURITY_HEADERS_BUFFER_SIZE];
+                int len = snprintf(timeout_response, sizeof(timeout_response),
+                                   "HTTP/1.1 408 Request Timeout\r\n"
+                                   "Content-Length: 0\r\n"
+                                   "Retry-After: 5\r\n");
+                if (len > 0 && (size_t)len < sizeof(timeout_response)) {
+                    size_t current_len = (size_t)len;
+                    add_global_security_headers(timeout_response, &current_len, &config->security_headers);
+                    if (current_len + 2 < sizeof(timeout_response)) {
+                        strcpy(timeout_response + current_len, "\r\n");
+                        SSL_write(ssl, timeout_response, current_len + 2);
+                    }
+                }
                 goto shutdown_and_close;
             }
             
@@ -937,22 +967,36 @@ static void handle_http1_connection(SSL *ssl, int client_fd, ServerConfig *confi
         }
         buffer[total_read] = '\0';
         if (header_end < 0) {
-            const char *too_large =
-                "HTTP/1.1 431 Request Header Fields Too Large\r\n"
-                "Content-Length: 0\r\n"
-                "\r\n";
-            SSL_write(ssl, too_large, strlen(too_large));
+            char too_large[SERVER_SECURITY_HEADERS_BUFFER_SIZE];
+            int len = snprintf(too_large, sizeof(too_large),
+                               "HTTP/1.1 431 Request Header Fields Too Large\r\n"
+                               "Content-Length: 0\r\n");
+            if (len > 0 && (size_t)len < sizeof(too_large)) {
+                size_t current_len = (size_t)len;
+                add_global_security_headers(too_large, &current_len, &config->security_headers);
+                if (current_len + 2 < sizeof(too_large)) {
+                    strcpy(too_large + current_len, "\r\n");
+                    SSL_write(ssl, too_large, current_len + 2);
+                }
+            }
             goto shutdown_and_close;
         }
 
         // 2) Parse the request
         HttpRequest req;
         if (parse_http_request(buffer, total_read, &req) != 0) {
-            const char *bad_response =
-                "HTTP/1.1 400 Bad Request\r\n"
-                "Content-Length: 0\r\n"
-                "\r\n";
-            SSL_write(ssl, bad_response, strlen(bad_response));
+            char bad_response[SERVER_SECURITY_HEADERS_BUFFER_SIZE];
+            int len = snprintf(bad_response, sizeof(bad_response),
+                               "HTTP/1.1 400 Bad Request\r\n"
+                               "Content-Length: 0\r\n");
+            if (len > 0 && (size_t)len < sizeof(bad_response)) {
+                size_t current_len = (size_t)len;
+                add_global_security_headers(bad_response, &current_len, &config->security_headers);
+                if (current_len + 2 < sizeof(bad_response)) {
+                    strcpy(bad_response + current_len, "\r\n");
+                    SSL_write(ssl, bad_response, current_len + 2);
+                }
+            }
             // malformed request → close connection
             goto shutdown_and_close;
         }
