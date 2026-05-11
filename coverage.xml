@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE coverage SYSTEM 'http://cobertura.sourceforge.net/xml/coverage-04.dtd'>
-<coverage line-rate="0.594379963347587" branch-rate="0.4420142421159715" lines-covered="1946" lines-valid="3274" branches-covered="869" branches-valid="1966" complexity="0.0" timestamp="1778503371" version="gcovr 7.0">
+<coverage line-rate="0.594379963347587" branch-rate="0.4420142421159715" lines-covered="1946" lines-valid="3274" branches-covered="869" branches-valid="1966" complexity="0.0" timestamp="1778503719" version="gcovr 7.0">
   <sources>
     <source>.</source>
   </sources>
@@ -2833,20 +2833,20 @@
             <line number="91" hits="0" branch="false"/>
             <line number="96" hits="24" branch="false"/>
             <line number="98" hits="24" branch="false"/>
-            <line number="99" hits="9002" branch="true" condition-coverage="100% (4/4)">
+            <line number="99" hits="8973" branch="true" condition-coverage="100% (4/4)">
               <conditions>
                 <condition number="0" type="jump" coverage="100%"/>
               </conditions>
             </line>
-            <line number="100" hits="8978" branch="false"/>
-            <line number="101" hits="8978" branch="false"/>
-            <line number="102" hits="8978" branch="true" condition-coverage="100% (2/2)">
+            <line number="100" hits="8949" branch="false"/>
+            <line number="101" hits="8949" branch="false"/>
+            <line number="102" hits="8949" branch="true" condition-coverage="100% (2/2)">
               <conditions>
                 <condition number="0" type="jump" coverage="100%"/>
               </conditions>
             </line>
-            <line number="104" hits="8785" branch="false"/>
-            <line number="105" hits="8785" branch="false"/>
+            <line number="104" hits="8756" branch="false"/>
+            <line number="105" hits="8756" branch="false"/>
             <line number="107" hits="193" branch="false"/>
             <line number="112" hits="193" branch="false"/>
             <line number="113" hits="193" branch="false"/>
@@ -5971,15 +5971,15 @@
             <line number="109" hits="326" branch="false"/>
             <line number="111" hits="22" branch="false"/>
             <line number="112" hits="348" branch="false"/>
-            <line number="114" hits="683" branch="true" condition-coverage="100% (4/4)">
+            <line number="114" hits="685" branch="true" condition-coverage="100% (4/4)">
               <conditions>
                 <condition number="0" type="jump" coverage="100%"/>
               </conditions>
             </line>
-            <line number="117" hits="335" branch="false"/>
-            <line number="118" hits="335" branch="false"/>
-            <line number="119" hits="335" branch="false"/>
-            <line number="121" hits="335" branch="true" condition-coverage="25% (1/4)">
+            <line number="117" hits="337" branch="false"/>
+            <line number="118" hits="337" branch="false"/>
+            <line number="119" hits="337" branch="false"/>
+            <line number="121" hits="337" branch="true" condition-coverage="25% (1/4)">
               <conditions>
                 <condition number="0" type="jump" coverage="25%"/>
               </conditions>
