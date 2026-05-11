@@ -971,83 +971,39 @@ cleanup:
     return rc;
 }
 
+static void apply_int_env_override(const char *env_name, int *config_value, int min_val, int max_val, 
+                                   const char *unit, int scale)
+{
+    const char *env_str = getenv(env_name);
+    if (!env_str) return;
+    
+    char *endptr;
+    long value = strtol(env_str, &endptr, 10);
+    if (*endptr == '\0' && value >= min_val && value <= max_val) {
+        *config_value = (int)(value * scale);
+    } else {
+        fprintf(stderr, "Warning: Invalid %s value '%s', using config value %d%s\n", 
+                env_name, env_str, *config_value, unit);
+    }
+}
+
+static void apply_string_env_override(const char *env_name, char *config_value, size_t max_len)
+{
+    const char *env_str = getenv(env_name);
+    if (!env_str) return;
+    
+    strncpy(config_value, env_str, max_len - 1);
+    config_value[max_len - 1] = '\0';
+}
+
 void apply_env_overrides(ServerConfig *config)
 {
-    const char *env_port = getenv("EMME_PORT");
-    if (env_port) {
-        char *endptr;
-        long port = strtol(env_port, &endptr, 10);
-        if (*endptr == '\0' && port > 0 && port <= 65535) {
-            config->port = (int)port;
-        } else {
-            fprintf(stderr, "Warning: Invalid EMME_PORT value '%s', using config value %d\n", 
-                    env_port, config->port);
-        }
-    }
-
-    const char *env_log_level = getenv("EMME_LOG_LEVEL");
-    if (env_log_level) {
-        strncpy(config->log_level, env_log_level, sizeof(config->log_level) - 1);
-        config->log_level[sizeof(config->log_level) - 1] = '\0';
-    }
-
-    const char *env_shutdown_timeout = getenv("EMME_SHUTDOWN_TIMEOUT");
-    if (env_shutdown_timeout) {
-        char *endptr;
-        long timeout = strtol(env_shutdown_timeout, &endptr, 10);
-        if (*endptr == '\0' && timeout > 0 && timeout <= 300) {
-            config->shutdown_timeout_seconds = (int)timeout;
-        } else {
-            fprintf(stderr, "Warning: Invalid EMME_SHUTDOWN_TIMEOUT value '%s', using config value %d\n", 
-                    env_shutdown_timeout, config->shutdown_timeout_seconds);
-        }
-    }
-
-    const char *env_max_connections = getenv("EMME_MAX_CONNECTIONS");
-    if (env_max_connections) {
-        char *endptr;
-        long max_conn = strtol(env_max_connections, &endptr, 10);
-        if (*endptr == '\0' && max_conn > 0 && max_conn <= 1000000) {
-            config->max_connections = (int)max_conn;
-        } else {
-            fprintf(stderr, "Warning: Invalid EMME_MAX_CONNECTIONS value '%s', using config value %d\n", 
-                    env_max_connections, config->max_connections);
-        }
-    }
-
-    const char *env_ssl_cert = getenv("EMME_SSL_CERT_PATH");
-    if (env_ssl_cert) {
-        strncpy(config->ssl.certificate, env_ssl_cert, sizeof(config->ssl.certificate) - 1);
-        config->ssl.certificate[sizeof(config->ssl.certificate) - 1] = '\0';
-    }
-
-    const char *env_ssl_key = getenv("EMME_SSL_KEY_PATH");
-    if (env_ssl_key) {
-        strncpy(config->ssl.private_key, env_ssl_key, sizeof(config->ssl.private_key) - 1);
-        config->ssl.private_key[sizeof(config->ssl.private_key) - 1] = '\0';
-    }
-    
-    const char *env_request_timeout = getenv("EMME_REQUEST_TIMEOUT");
-    if (env_request_timeout) {
-        char *endptr;
-        long timeout = strtol(env_request_timeout, &endptr, 10);
-        if (*endptr == '\0' && timeout >= 1 && timeout <= 300) {
-            config->request_timeout_ms = (int)(timeout * 1000);
-        } else {
-            fprintf(stderr, "Warning: Invalid EMME_REQUEST_TIMEOUT value '%s', using config value %dms\n", 
-                    env_request_timeout, config->request_timeout_ms);
-        }
-    }
-    
-    const char *env_tls_timeout = getenv("EMME_TLS_HANDSHAKE_TIMEOUT");
-    if (env_tls_timeout) {
-        char *endptr;
-        long timeout = strtol(env_tls_timeout, &endptr, 10);
-        if (*endptr == '\0' && timeout >= 1 && timeout <= 60) {
-            config->tls_handshake_timeout_ms = (int)(timeout * 1000);
-        } else {
-            fprintf(stderr, "Warning: Invalid EMME_TLS_HANDSHAKE_TIMEOUT value '%s', using config value %dms\n", 
-                    env_tls_timeout, config->tls_handshake_timeout_ms);
-        }
-    }
+    apply_int_env_override("EMME_PORT", &config->port, 1, 65535, "", 1);
+    apply_string_env_override("EMME_LOG_LEVEL", config->log_level, sizeof(config->log_level));
+    apply_int_env_override("EMME_SHUTDOWN_TIMEOUT", &config->shutdown_timeout_seconds, 1, 300, "", 1);
+    apply_int_env_override("EMME_MAX_CONNECTIONS", &config->max_connections, 1, 1000000, "", 1);
+    apply_string_env_override("EMME_SSL_CERT_PATH", config->ssl.certificate, sizeof(config->ssl.certificate));
+    apply_string_env_override("EMME_SSL_KEY_PATH", config->ssl.private_key, sizeof(config->ssl.private_key));
+    apply_int_env_override("EMME_REQUEST_TIMEOUT", &config->request_timeout_ms, 1, 300, "ms", 1000);
+    apply_int_env_override("EMME_TLS_HANDSHAKE_TIMEOUT", &config->tls_handshake_timeout_ms, 1, 60, "ms", 1000);
 }
