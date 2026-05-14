@@ -26,6 +26,7 @@
 #include <ctype.h>
 #include "http2_response.h"
 #include "uuid.h"
+#include "ip_limiter.h"
 
 #ifndef DEBUG_H2
 #define DEBUG_H2 0
@@ -274,6 +275,8 @@ static struct io_uring global_ring;
 static int g_server_fd = -1;
 
 shutdown_context_t g_shutdown_ctx = {0};
+static ip_limiter_t g_ip_limiter;
+static int g_ip_limiter_initialized = 0;
 
 static void log_io_uring_error(const char *context, int ret)
 {
@@ -296,6 +299,10 @@ static void cleanup_server_resources(ThreadPool *pool, int server_fd)
     if (ssl_ctx) {
         cleanup_ssl_context(ssl_ctx);
         ssl_ctx = NULL;
+    }
+    if (g_ip_limiter_initialized) {
+        ip_limiter_destroy(&g_ip_limiter);
+        g_ip_limiter_initialized = 0;
     }
 }
 
@@ -358,6 +365,15 @@ static int initialize_server(ServerConfig *config, ThreadPool **out_pool)
         return -1;
     }
     
+    if (ip_limiter_init(&g_ip_limiter, config->per_ip_connection_limit) != 0) {
+        log_message(LOG_LEVEL_ERROR, "Failed to initialize IP limiter");
+        close(g_server_fd);
+        g_server_fd = -1;
+        io_uring_queue_exit(&global_ring);
+        return -1;
+    }
+    g_ip_limiter_initialized = 1;
+    
     ssl_ctx = create_ssl_context(config->ssl.certificate, config->ssl.private_key, config);
     if (!ssl_ctx) {
         log_message(LOG_LEVEL_ERROR, "Failed to create SSL context");
@@ -386,6 +402,35 @@ static int initialize_server(ServerConfig *config, ThreadPool **out_pool)
     return 0;
 }
 
+static int send_429_response(int client_fd)
+{
+    const char *response = "HTTP/1.1 429 Too Many Requests\r\n"
+                           "Retry-After: 10\r\n"
+                           "Content-Length: 0\r\n"
+                           "Connection: close\r\n"
+                           "\r\n";
+    
+    ssize_t sent = send(client_fd, response, strlen(response), MSG_NOSIGNAL);
+    if (sent < 0) {
+        log_message(LOG_LEVEL_DEBUG, "Failed to send 429 response: %s", strerror(errno));
+    }
+    return 0;
+}
+
+static void handle_ip_limiter_rejection(int client_fd, uint32_t client_ip, uint32_t current_count, uint32_t limit)
+{
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &client_ip, ip_str, sizeof(ip_str));
+    
+    log_message(LOG_LEVEL_WARN, "Per-IP connection limit exceeded: IP=%s, current=%u, limit=%u",
+                ip_str, current_count, limit);
+    
+    metrics_increment_per_ip_limit_rejected();
+    
+    send_429_response(client_fd);
+    close(client_fd);
+}
+
 static int accept_and_dispatch_client(ThreadPool *pool, ServerConfig *config)
 {
     struct io_uring_sqe *sqe;
@@ -397,6 +442,9 @@ static int accept_and_dispatch_client(ThreadPool *pool, ServerConfig *config)
     shutdown_state_t state;
     int flags;
     ClientTaskData *task_data;
+    uint32_t client_ip;
+    uint32_t current_count;
+    ip_limiter_result_t limiter_result;
     
     sqe = io_uring_get_sqe(&global_ring);
     if (!sqe) {
@@ -438,15 +486,32 @@ static int accept_and_dispatch_client(ThreadPool *pool, ServerConfig *config)
         return (state != SHUTDOWN_STATE_RUNNING) ? 1 : 0;
     }
     
+    client_ip = client_addr.sin_addr.s_addr;
+    
+    limiter_result = ip_limiter_check_and_increment(&g_ip_limiter, client_ip, &current_count);
+    
+    if (limiter_result == IP_LIMITER_REJECTED) {
+        handle_ip_limiter_rejection(client_fd, client_ip, current_count, config->per_ip_connection_limit);
+        return 0;
+    }
+    
+    if (limiter_result == IP_LIMITER_ERROR) {
+        log_message(LOG_LEVEL_ERROR, "IP limiter check failed, rejecting connection");
+        close(client_fd);
+        return 0;
+    }
+    
     flags = fcntl(client_fd, F_GETFL, 0);
     if (flags == -1) {
         log_message(LOG_LEVEL_ERROR, "fcntl(F_GETFL) failed: %s", strerror(errno));
+        ip_limiter_decrement(&g_ip_limiter, client_ip);
         close(client_fd);
         return 0;
     }
     
     if (fcntl(client_fd, F_SETFL, flags & ~O_NONBLOCK) == -1) {
         log_message(LOG_LEVEL_ERROR, "fcntl(F_SETFL) failed: %s", strerror(errno));
+        ip_limiter_decrement(&g_ip_limiter, client_ip);
         close(client_fd);
         return 0;
     }
@@ -454,12 +519,14 @@ static int accept_and_dispatch_client(ThreadPool *pool, ServerConfig *config)
     task_data = malloc(sizeof(ClientTaskData));
     if (!task_data) {
         log_message(LOG_LEVEL_ERROR, "Failed to allocate client task data: %s", strerror(errno));
+        ip_limiter_decrement(&g_ip_limiter, client_ip);
         close(client_fd);
         return 0;
     }
     
     task_data->client_fd = client_fd;
     task_data->config = config;
+    task_data->client_ip = client_ip;
     
     atomic_fetch_add(&g_shutdown_ctx.in_flight_requests, 1);
     metrics_set_active_connections(atomic_load(&g_shutdown_ctx.in_flight_requests));
@@ -468,6 +535,7 @@ static int accept_and_dispatch_client(ThreadPool *pool, ServerConfig *config)
         log_message(LOG_LEVEL_ERROR, "Failed to add task to thread pool");
         atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
         metrics_set_active_connections(atomic_load(&g_shutdown_ctx.in_flight_requests));
+        ip_limiter_decrement(&g_ip_limiter, client_ip);
         free(task_data);
         close(client_fd);
     }
@@ -1038,6 +1106,7 @@ void client_task(void *arg)
                 free(local_ring);
                 local_ring = NULL;
             }
+            ip_limiter_decrement(&g_ip_limiter, data->client_ip);
             close(data->client_fd);
             free(data);
             atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
@@ -1049,6 +1118,7 @@ void client_task(void *arg)
     io_uring_queue_exit(local_ring);
     free(local_ring);
     local_ring = NULL;
+    ip_limiter_decrement(&g_ip_limiter, data->client_ip);
     free(data);
     atomic_fetch_sub(&g_shutdown_ctx.in_flight_requests, 1);
     metrics_set_active_connections(atomic_load(&g_shutdown_ctx.in_flight_requests));
@@ -1120,6 +1190,8 @@ int start_server(ServerConfig *config)
         
         if (now - last_stats_log >= SESSION_STATS_INTERVAL_SEC) {
             log_session_stats(ssl_ctx);
+            ip_limiter_compact(&g_ip_limiter);
+            metrics_set_ip_limiter_entries((long)ip_limiter_get_total_entries(&g_ip_limiter));
             last_stats_log = now;
         }
         

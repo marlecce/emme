@@ -1,6 +1,7 @@
 server:
   port: 8443
-  max_connections: 100
+  max_connections: 1000            # Increased for benchmark testing (default: 100)
+  per_ip_connection_limit: 100     # Increased for benchmark testing (default: 10)
   request_timeout_ms: 30000        # Default 30s request timeout (override via EMME_REQUEST_TIMEOUT env var)
   tls_handshake_timeout_ms: 10000  # Default 10s TLS handshake timeout (override via EMME_TLS_HANDSHAKE_TIMEOUT env var)
   log_level: info

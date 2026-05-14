@@ -97,6 +97,7 @@ typedef struct {
     int shutdown_timeout_seconds;
     int request_timeout_ms;
     int tls_handshake_timeout_ms;
+    int per_ip_connection_limit;
     char log_level[MAX_LOG_LEVEL];
     int route_count;
     Route routes[MAX_ROUTES];

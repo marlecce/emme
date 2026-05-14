@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <config.h>
 
 typedef struct {
@@ -13,6 +14,7 @@ typedef struct {
 typedef struct {
     int client_fd;
     ServerConfig *config;
+    uint32_t client_ip;
 } ClientTaskData;
 
 // Opaque thread pool type.

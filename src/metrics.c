@@ -58,6 +58,14 @@ void metrics_init(void)
     g_metrics.cors_headers_sent_total.metadata.help = "Total number of CORS headers sent";
     g_metrics.cors_headers_sent_total.metadata.type = "counter";
     
+    g_metrics.per_ip_limit_rejected_total.metadata.name = "emme_per_ip_limit_rejected_total";
+    g_metrics.per_ip_limit_rejected_total.metadata.help = "Total number of connections rejected due to per-IP limit";
+    g_metrics.per_ip_limit_rejected_total.metadata.type = "counter";
+    
+    g_metrics.ip_limiter_entries_total.metadata.name = "emme_ip_limiter_entries_total";
+    g_metrics.ip_limiter_entries_total.metadata.help = "Number of unique IPs currently tracked by the IP limiter";
+    g_metrics.ip_limiter_entries_total.metadata.type = "gauge";
+    
     g_metrics.active_connections.metadata.name = "emme_active_connections";
     g_metrics.active_connections.metadata.help = "Number of active connections";
     g_metrics.active_connections.metadata.type = "gauge";
@@ -193,6 +201,16 @@ void metrics_increment_cors_headers_sent(void)
 void metrics_set_active_connections(long count)
 {
     atomic_store(&g_metrics.active_connections.value, count);
+}
+
+void metrics_increment_per_ip_limit_rejected(void)
+{
+    atomic_fetch_add(&g_metrics.per_ip_limit_rejected_total.value, 1);
+}
+
+void metrics_set_ip_limiter_entries(long count)
+{
+    atomic_store(&g_metrics.ip_limiter_entries_total.value, count);
 }
 
 void metrics_set_thread_pool_stats(int active_threads, int queue_depth)
@@ -371,6 +389,11 @@ char *metrics_format_prometheus(void)
     if (written < 0) goto truncation_error;
     offset += (size_t)written;
     
+    written = format_counter(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                            &g_metrics.per_ip_limit_rejected_total);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
     written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
                           &g_metrics.active_connections);
     if (written < 0) goto truncation_error;
@@ -428,6 +451,11 @@ char *metrics_format_prometheus(void)
     
     written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
                           &g_metrics.health_checker_total_checks);
+    if (written < 0) goto truncation_error;
+    offset += (size_t)written;
+    
+    written = format_gauge(buffer + offset, METRICS_BUFFER_SIZE - offset,
+                          &g_metrics.ip_limiter_entries_total);
     if (written < 0) goto truncation_error;
     offset += (size_t)written;
     

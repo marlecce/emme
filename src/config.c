@@ -108,6 +108,7 @@ static void set_config_defaults(ServerConfig *config)
     
     config->request_timeout_ms = 30000;
     config->tls_handshake_timeout_ms = 10000;
+    config->per_ip_connection_limit = 10;
     
     config->security_headers.enabled = true;
     config->security_headers.header_count = 0;
@@ -632,6 +633,7 @@ static int parse_server_section(ConfigParser *ctx, yaml_node_t *node)
     PARSE_FIELD("shutdown_timeout_seconds", get_yaml_int_in_range, 1, 300, &ctx->config->shutdown_timeout_seconds);
     PARSE_FIELD("request_timeout_ms", get_yaml_int_in_range, 1000, 300000, &ctx->config->request_timeout_ms);
     PARSE_FIELD("tls_handshake_timeout_ms", get_yaml_int_in_range, 1000, 60000, &ctx->config->tls_handshake_timeout_ms);
+    PARSE_FIELD("per_ip_connection_limit", get_yaml_int_in_range, 1, 10000, &ctx->config->per_ip_connection_limit);
     PARSE_STRING("log_level", ctx->config->log_level, sizeof(ctx->config->log_level));
 
     return 0;
@@ -1006,4 +1008,5 @@ void apply_env_overrides(ServerConfig *config)
     apply_string_env_override("EMME_SSL_KEY_PATH", config->ssl.private_key, sizeof(config->ssl.private_key));
     apply_int_env_override("EMME_REQUEST_TIMEOUT", &config->request_timeout_ms, 1, 300, "ms", 1000);
     apply_int_env_override("EMME_TLS_HANDSHAKE_TIMEOUT", &config->tls_handshake_timeout_ms, 1, 60, "ms", 1000);
+    apply_int_env_override("EMME_PER_IP_CONNECTION_LIMIT", &config->per_ip_connection_limit, 1, 10000, "", 1);
 }
