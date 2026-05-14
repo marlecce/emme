@@ -33,10 +33,10 @@ coverage: coverage-clean
 # Text + HTML + XML (CI friendly)
 coverage-report:
 	@mkdir -p coverage
-	gcovr -r . --exclude 'tests' --branches --txt > coverage/summary.txt
-	gcovr -r . --exclude 'tests' --branches --xml-pretty -o coverage/coverage.xml
-	gcovr -r . --exclude 'tests' --branches --html --html-title "emme coverage" -o coverage/coverage.html
-	gcovr -r . --exclude 'tests' --branches --html-details coverage/index.html --html-title "emme coverage"
+	gcovr -r . --exclude 'tests' --branches --txt --gcov-ignore-parse-errors > coverage/summary.txt
+	gcovr -r . --exclude 'tests' --branches --xml-pretty --gcov-ignore-parse-errors -o coverage/coverage.xml
+	gcovr -r . --exclude 'tests' --branches --html --html-title "emme coverage" --gcov-ignore-parse-errors -o coverage/coverage.html
+	gcovr -r . --exclude 'tests' --branches --html-details coverage/index.html --html-title "emme coverage" --gcov-ignore-parse-errors
 	@echo "Open coverage/index.html"
 
 # Target principale per compilare il server
